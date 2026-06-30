@@ -5,6 +5,7 @@
 #include <string>
 #include <algorithm>
 #include <filesystem>
+#include <system_error>
 
 #include "map.h"
 
@@ -154,6 +155,20 @@ BeatmapInfo loadBeatmapInfo(const std::filesystem::path& filename) {
         }
     }
     return info;
+}
+
+std::filesystem::path findHitSound(const std::filesystem::path& mapDir) {
+    // 依 sample set 優先序找主打擊取樣；raylib 支援 wav/ogg/mp3/flac
+    const char* stems[] = {"normal-hitnormal", "soft-hitnormal", "drum-hitnormal", "hitnormal"};
+    const char* exts[] = {".wav", ".ogg", ".mp3", ".flac"};
+    std::error_code ec;
+    for (const char* stem : stems) {
+        for (const char* ext : exts) {
+            const std::filesystem::path p = mapDir / (std::string(stem) + ext);
+            if (std::filesystem::exists(p, ec)) return p;
+        }
+    }
+    return {};
 }
 
 BeatmapHeader probeBeatmap(const std::filesystem::path& filename) {

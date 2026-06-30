@@ -265,6 +265,16 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
     const bool haveMusic = music.valid();
     if (haveMusic) SetMusicVolume(music.get(), settings.musicVolume);
 
+    // 譜包自帶打擊取樣優先，否則用傳入的合成音
+    std::optional<SoundRes> packHit;
+    const fs::path hitPath = findHitSound(entry.path.parent_path());
+    if (!hitPath.empty()) {
+        packHit.emplace(hitPath.string().c_str());
+        if (!packHit->valid()) packHit.reset();
+    }
+    Sound& hitSound = packHit ? packHit->get() : hit;
+    SetSoundVolume(hitSound, settings.effectVolume);
+
     SongClock clock{kLeadInMs};
     bool musicStarted = false;
     double songTimeMs = -kLeadInMs;
@@ -384,7 +394,7 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
                 flashJ[ev.lane] = ev.judgment;
                 anyHit = true;
             }
-            if (anyHit) PlaySound(hit);
+            if (anyHit) PlaySound(hitSound);
             if (session.finished(songTimeMs)) {
                 playing = false;
                 if (!recorded) {  // 打完提交成績

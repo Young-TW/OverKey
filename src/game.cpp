@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -96,8 +97,15 @@ void Game::run(Viewport& vp) {
     const bool haveMusic = music.valid();
     if (haveMusic) SetMusicVolume(music.get(), settings_.musicVolume);
 
-    SoundRes hitSound{makeHitSound()};
-    SetSoundVolume(hitSound.get(), settings_.effectVolume);
+    // 優先用譜包自帶的打擊取樣，沒有才用合成音
+    std::optional<SoundRes> hitSound;
+    const std::filesystem::path hitPath = findHitSound(audioPath_.parent_path());
+    if (!hitPath.empty()) {
+        hitSound.emplace(hitPath.string().c_str());
+        if (!hitSound->valid()) hitSound.reset();
+    }
+    if (!hitSound) hitSound.emplace(makeHitSound());
+    SetSoundVolume(hitSound->get(), settings_.effectVolume);
 
     SongClock clock{kLeadInMs};
     bool musicStarted = false;
@@ -163,7 +171,7 @@ void Game::run(Viewport& vp) {
                 triggerFlash(ev.lane, ev.judgment);
                 anyHit = true;
             }
-            if (anyHit) PlaySound(hitSound.get());
+            if (anyHit) PlaySound(hitSound->get());
 
             if (session_.finished(songTimeMs)) {
                 phase_ = Phase::Result;

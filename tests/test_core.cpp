@@ -87,6 +87,14 @@ void testMapParsing() {
     CHECK(probeBeatmap(writeOsu("4k2.osu", 3, 4, -1, ho4)).isSupported());
     CHECK(!probeBeatmap(writeOsu("std.osu", 0, 5, -1, ho4)).isSupported());   // 非 mania
     CHECK(!probeBeatmap(writeOsu("5k.osu", 3, 5, -1, ho4)).isSupported());    // 5K 未支援
+
+    // findHitSound：無取樣→空；有則找到並依優先序
+    const fs::path dir = p.parent_path();
+    CHECK(findHitSound(dir).empty());
+    { std::ofstream(dir / "drum-hitnormal.ogg") << "x"; }
+    CHECK(findHitSound(dir) == dir / "drum-hitnormal.ogg");
+    { std::ofstream(dir / "normal-hitnormal.wav") << "x"; }
+    CHECK(findHitSound(dir) == dir / "normal-hitnormal.wav");  // normal 優先於 drum
 }
 
 // 單一普通音符，測不同按壓時間的判定等級

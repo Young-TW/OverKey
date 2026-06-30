@@ -48,6 +48,9 @@ Beatmap loadBeatmap(const std::filesystem::path& filename);
 // 輕量解析：只取摘要欄位並統計音符數/長度，不建立音符向量
 BeatmapInfo loadBeatmapInfo(const std::filesystem::path& filename);
 
+// 在譜面資料夾尋找主打擊取樣（normal/soft/drum-hitnormal）；找不到回傳空路徑
+std::filesystem::path findHitSound(const std::filesystem::path& mapDir);
+
 // 僅取得音符序列（沿用舊介面，內部呼叫 loadBeatmap）
 std::vector<ManiaNote> parse7K(const std::filesystem::path& filename);
 

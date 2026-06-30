@@ -6,6 +6,7 @@
 
 #include "map.h"
 #include "play.h"
+#include "scores.h"
 #include "settings.h"
 
 class Viewport;
@@ -13,11 +14,18 @@ class Viewport;
 // raylib 前端：驅動 PlaySession（純邏輯 core），負責渲染、輸入、音訊。
 class Game {
 public:
-    Game(Beatmap map, std::filesystem::path audioPath, Settings settings);
+    Game(Beatmap map, std::filesystem::path audioPath, Settings settings,
+         ScoreRecord prevBest = {});
     void run(Viewport& vp);
 
     // 遊玩中以 F3/F4 調整後的下落速度，供呼叫端存回設定
     float scrollSpeed() const { return settings_.scrollSpeed; }
+
+    bool completed() const { return phase_ == Phase::Result; }  // 是否打完（reach 結算）
+    int finalScore() const { return session_.score(); }
+    double finalAccuracy() const { return session_.accuracy(); }
+    const char* finalGrade() const { return session_.grade(); }
+    int finalMaxCombo() const { return session_.maxCombo(); }
 
 private:
     enum class Phase { Playing, Paused, Result };
@@ -30,6 +38,7 @@ private:
     Beatmap map_;
     std::filesystem::path audioPath_;
     Settings settings_;
+    ScoreRecord prevBest_;  // 進入前的最佳成績（結算顯示用）
     PlaySession session_;
 
     int keyCount_ = 7;          // 音軌數（4 或 7）

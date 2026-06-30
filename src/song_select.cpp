@@ -53,8 +53,9 @@ void SongSelect::clampScroll() {
     scroll_ = std::max(0, scroll_);
 }
 
-MenuResult SongSelect::run(Viewport& vp, float musicVolume) {
+MenuResult SongSelect::run(Viewport& vp, float musicVolume, const ScoreBook& scores) {
     SetWindowTitle("OverKey - Select Song");
+    scores_ = &scores;
 
     std::optional<MusicRes> preview;        // 目前試聽
     std::filesystem::path previewPath;      // 正在播放的音訊檔（空＝無）
@@ -191,6 +192,21 @@ void SongSelect::draw() const {
         DrawText(TextFormat("Notes    %d", bi.noteCount), kPanelX, y, 22, RAYWHITE);
         y += 30;
         DrawText(TextFormat("Length   %d:%02d", sec / 60, sec % 60), kPanelX, y, 22, RAYWHITE);
+        y += 44;
+
+        // 最佳成績
+        const ScoreRecord rec = scores_ ? scores_->best(e.path.string()) : ScoreRecord{};
+        DrawText("BEST", kPanelX, y, 18, GRAY);
+        y += 24;
+        if (rec.valid) {
+            DrawText(TextFormat("%s   %.2f%%", rec.grade.c_str(), rec.accuracy), kPanelX, y, 24,
+                     GOLD);
+            y += 28;
+            DrawText(TextFormat("%d   x%d", rec.score, rec.maxCombo), kPanelX, y, 20,
+                     Fade(RAYWHITE, 0.8f));
+        } else {
+            DrawText("not played", kPanelX, y, 20, Fade(RAYWHITE, 0.5f));
+        }
     }
 
     const char* hint =

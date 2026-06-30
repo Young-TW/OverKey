@@ -72,10 +72,12 @@ Sound makeHitSound() {
 
 }  // namespace
 
-Game::Game(Beatmap map, std::filesystem::path audioPath, Settings settings)
+Game::Game(Beatmap map, std::filesystem::path audioPath, Settings settings,
+           ScoreRecord prevBest)
     : map_(std::move(map)),
       audioPath_(std::move(audioPath)),
       settings_(settings),
+      prevBest_(prevBest),
       session_(map_.notes),
       keyCount_(map_.keyCount == 4 ? 4 : 7),
       laneKeys_(keyCount_ == 4 ? settings_.keys4.data() : settings_.keys.data()),
@@ -385,6 +387,17 @@ void Game::drawResult() const {
         const char* m = TextFormat("MEAN  %+.1f ms (%s)   suggested offset %+d ms (TAB)", mean,
                                    mean > 0 ? "late" : "early", suggested);
         DrawText(m, cx - MeasureText(m, 22) / 2, gy + gh + 36, 22, Fade(GOLD, 0.85f));
+    }
+
+    // 最佳成績 / 破紀錄
+    const int by = gy + gh + 66;
+    if (prevBest_.valid && session_.score() > prevBest_.score) {
+        const char* nr = "NEW RECORD!";
+        DrawText(nr, cx - MeasureText(nr, 26) / 2, by, 26, GOLD);
+    } else if (prevBest_.valid) {
+        const char* b = TextFormat("BEST  %d   %.2f%%   %s", prevBest_.score,
+                                   prevBest_.accuracy, prevBest_.grade.c_str());
+        DrawText(b, cx - MeasureText(b, 22) / 2, by, 22, Fade(RAYWHITE, 0.6f));
     }
 
     const char* hint = "Press ENTER to exit";

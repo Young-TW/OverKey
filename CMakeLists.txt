@@ -22,6 +22,7 @@ add_library(overkey_core STATIC
     src/map.cpp
     src/play.cpp
     src/settings.cpp
+    src/scores.cpp
 )
 target_include_directories(overkey_core PUBLIC ./include)
 target_link_libraries(overkey_core PUBLIC raylib)
@@ -45,6 +46,6 @@ install(TARGETS ${PROJECT_NAME} overkey-tui)
 
 # 測試：只編 raylib-free 的 core 原始碼，headless 可跑
 enable_testing()
-add_executable(test_core tests/test_core.cpp src/map.cpp src/play.cpp)
+add_executable(test_core tests/test_core.cpp src/map.cpp src/play.cpp src/scores.cpp)
 target_include_directories(test_core PRIVATE ./include)
 add_test(NAME core COMMAND test_core)

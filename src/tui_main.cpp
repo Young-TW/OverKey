@@ -14,6 +14,7 @@
 #include "map.h"
 #include "play.h"
 #include "raii.h"
+#include "scores.h"
 #include "settings.h"
 #include "tui.h"
 
@@ -33,6 +34,7 @@ using Clock = std::chrono::steady_clock;
 namespace {
 
 constexpr const char* kConfigFile = "overkey.cfg";
+constexpr const char* kScoresFile = "overkey-scores.txt";
 constexpr double kLeadInMs = 2000.0;
 constexpr double kBaseApproachMs = 550.0;
 
@@ -119,7 +121,8 @@ constexpr int kMenuQuit = -1;
 constexpr int kMenuSettings = -2;
 
 // 回傳 kMenuQuit=離開、kMenuSettings=設定，否則為選擇的 index
-int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float musicVolume) {
+int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float musicVolume,
+            const ScoreBook& scores) {
     PixelCanvas canvas(term.cols(), term.rows());
     std::string out;
     std::optional<BeatmapInfo> info;
@@ -216,9 +219,21 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
                 ++y;
                 const int sec = info->lengthMs / 1000;
                 canvas.putText(px, y++, "notes  " + std::to_string(info->noteCount), kWhite);
-                char buf[32];
+                char buf[48];
                 std::snprintf(buf, sizeof(buf), "length %d:%02d", sec / 60, sec % 60);
                 canvas.putText(px, y++, buf, kWhite);
+                ++y;
+                const ScoreRecord rec = scores.best(entries[selected].path.string());
+                canvas.putText(px, y++, "BEST", kGray);
+                if (rec.valid) {
+                    std::snprintf(buf, sizeof(buf), "%s  %.2f%%", rec.grade.c_str(),
+                                  rec.accuracy);
+                    canvas.putText(px, y++, buf, kGold);
+                    std::snprintf(buf, sizeof(buf), "%d  x%d", rec.score, rec.maxCombo);
+                    canvas.putText(px, y++, buf, kWhite);
+                } else {
+                    canvas.putText(px, y++, "not played", kGray);
+                }
             }
         }
 
@@ -229,9 +244,14 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
 }
 
 // 遊玩 + 結算；ESC/q 中途回選單
-void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit) {
+void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
+              ScoreBook& scores) {
     Beatmap map = loadBeatmap(entry.path);
     if (map.notes.empty()) return;
+
+    const std::string scoreKey = entry.path.string();
+    const ScoreRecord prevBest = scores.best(scoreKey);
+    bool recorded = false;  // 是否已提交本局成績
 
     PlaySession session(map.notes);
     const int keyCount = (map.keyCount == 4) ? 4 : 7;
@@ -359,7 +379,14 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit)
                 anyHit = true;
             }
             if (anyHit) PlaySound(hit);
-            if (session.finished(songTimeMs)) playing = false;
+            if (session.finished(songTimeMs)) {
+                playing = false;
+                if (!recorded) {  // 打完提交成績
+                    scores.submit(scoreKey, {session.score(), session.accuracy(),
+                                             session.grade(), session.maxCombo(), true});
+                    recorded = true;
+                }
+            }
         }
 
         // ---- 渲染 ----
@@ -460,6 +487,14 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit)
                 std::snprintf(buf, sizeof(buf), "mean %+.1fms  suggested offset %+dms", mean,
                               sug);
                 canvas.putText(cx - 16, ++y, buf, kGold);
+            }
+            ++y;
+            if (prevBest.valid && session.score() > prevBest.score) {
+                canvas.putText(cx - 6, y, "NEW RECORD!", kGold);
+            } else if (prevBest.valid) {
+                std::snprintf(buf, sizeof(buf), "BEST  %d  %.2f%%  %s", prevBest.score,
+                              prevBest.accuracy, prevBest.grade.c_str());
+                canvas.putText(cx - 14, y, buf, kGray);
             }
             canvas.putText(cx - 10, term.rows() - 2, "enter / esc to return", kGray);
         }
@@ -592,6 +627,7 @@ int main(int argc, char* argv[]) {
 
     const fs::path mapsDir = (argc > 1) ? argv[1] : "maps";
     Settings settings = loadSettings(kConfigFile);
+    ScoreBook scores{kScoresFile};
     std::vector<Entry> entries = scanMaps(mapsDir);
 
     SetTraceLogLevel(LOG_NONE);  // 避免 raylib 訊息汙染終端機畫面
@@ -603,7 +639,7 @@ int main(int argc, char* argv[]) {
         Terminal term;  // RAII：raw mode / alt screen / kitty
         int selected = 0;
         while (true) {
-            const int choice = runMenu(term, entries, selected, settings.musicVolume);
+            const int choice = runMenu(term, entries, selected, settings.musicVolume, scores);
             if (choice == kMenuQuit) break;
             if (choice == kMenuSettings) {
                 runSettings(term, settings);
@@ -612,7 +648,7 @@ int main(int argc, char* argv[]) {
                 continue;
             }
             const float prevSpeed = settings.scrollSpeed;
-            playSong(term, entries[choice], settings, hit);
+            playSong(term, entries[choice], settings, hit, scores);
             if (settings.scrollSpeed != prevSpeed)  // F3/F4 調過則存回
                 saveSettings(settings, kConfigFile);
         }

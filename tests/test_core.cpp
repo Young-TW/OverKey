@@ -7,6 +7,7 @@
 
 #include "map.h"
 #include "play.h"
+#include "scores.h"
 
 namespace fs = std::filesystem;
 
@@ -176,6 +177,29 @@ void testSongClock() {
     CHECK(c.timeMs() < t1 + 20.0);          // 仍約 +16ms，沒跳到 +50
 }
 
+void testScores() {
+    std::printf("scores\n");
+    const fs::path f = fs::temp_directory_path() / "overkey_test" / "scores.txt";
+    fs::create_directories(f.parent_path());
+    fs::remove(f);
+    const std::string key = "maps/Song [HARD].osu";  // key 含空白/括號
+    {
+        ScoreBook sb(f);
+        CHECK(!sb.best(key).valid);                                   // 一開始無紀錄
+        CHECK(sb.submit(key, {1000, 90.0, "A", 100}));               // 新紀錄
+        CHECK(!sb.submit(key, {800, 80.0, "B", 50}));                // 較低不更新
+        CHECK(sb.submit(key, {1500, 95.5, "S", 200}));               // 更高刷新
+        const ScoreRecord r = sb.best(key);
+        CHECK(r.valid && r.score == 1500 && r.grade == "S" && r.maxCombo == 200);
+        CHECK(r.accuracy > 95.4 && r.accuracy < 95.6);
+    }
+    {
+        ScoreBook sb2(f);                                            // 重載：持久化
+        const ScoreRecord r = sb2.best(key);
+        CHECK(r.valid && r.score == 1500 && r.grade == "S");
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -184,6 +208,7 @@ int main() {
     testScoringAndMiss();
     testLongNote();
     testSongClock();
+    testScores();
 
     std::error_code ec;
     fs::remove_all(fs::temp_directory_path() / "overkey_test", ec);

@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "map.h"
+#include "scores.h"
 
 class Viewport;
 
@@ -23,8 +24,8 @@ public:
     explicit SongSelect(std::filesystem::path mapsDir);
 
     // 跑選單迴圈：Enter→Play、Tab→Settings、Esc/關窗→Quit。
-    // musicVolume 用於 hover 副歌試聽。
-    MenuResult run(Viewport& vp, float musicVolume);
+    // musicVolume 用於 hover 副歌試聽；scores 用於詳情面板顯示最佳成績。
+    MenuResult run(Viewport& vp, float musicVolume, const ScoreBook& scores);
 
 private:
     struct Entry {
@@ -39,6 +40,7 @@ private:
 
     std::filesystem::path mapsDir_;
     std::vector<Entry> entries_;
+    const ScoreBook* scores_ = nullptr;  // 詳情面板顯示最佳成績用（run 期間有效）
     int selected_ = 0;
     int scroll_ = 0;
 };

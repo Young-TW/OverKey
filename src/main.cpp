@@ -7,11 +7,13 @@
 #include "map.h"
 #include "raii.h"
 #include "render.h"
+#include "scores.h"
 #include "settings.h"
 #include "song_select.h"
 
 namespace {
 const char* kConfigFile = "overkey.cfg";
+const char* kScoresFile = "overkey-scores.txt";
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -24,10 +26,11 @@ int main(int argc, char* argv[]) {
 
     Viewport viewport;  // 固定虛擬解析度，縮放置中到實際螢幕
     Settings settings = loadSettings(kConfigFile);
+    ScoreBook scores{kScoresFile};
     SongSelect menu{mapsDir};
 
     while (!WindowShouldClose()) {
-        MenuResult choice = menu.run(viewport, settings.musicVolume);
+        MenuResult choice = menu.run(viewport, settings.musicVolume, scores);
         if (choice.action == MenuAction::Quit) break;
 
         if (choice.action == MenuAction::Settings) {
@@ -43,12 +46,17 @@ int main(int argc, char* argv[]) {
             continue;
         }
 
+        const std::string key = choice.path.string();
         std::filesystem::path audioPath = choice.path.parent_path() / map.audioFilename;
-        Game game{std::move(map), std::move(audioPath), settings};
+        Game game{std::move(map), std::move(audioPath), settings, scores.best(key)};
         game.run(viewport);  // 結束或中途放棄後回到選單
         if (game.scrollSpeed() != settings.scrollSpeed) {  // F3/F4 調過則存回
             settings.scrollSpeed = game.scrollSpeed();
             saveSettings(settings, kConfigFile);
+        }
+        if (game.completed()) {  // 打完才記錄成績
+            scores.submit(key, {game.finalScore(), game.finalAccuracy(), game.finalGrade(),
+                                game.finalMaxCombo(), true});
         }
     }
 

@@ -17,7 +17,7 @@
 #include "tui.h"
 
 namespace fs = std::filesystem;
-using tui::BrailleCanvas;
+using tui::PixelCanvas;
 using tui::KeyEvent;
 using tui::Rgb;
 using tui::Terminal;
@@ -103,11 +103,11 @@ std::vector<Entry> scanMaps(const fs::path& dir) {
     return out;
 }
 
-constexpr auto kFramePeriod = std::chrono::microseconds(1000000 / 120);  // 目標 120fps
+constexpr auto kFramePeriod = std::chrono::microseconds(1000000 / 1000);  // 目標 1000fps
 
 // 回傳 -1 = 離開程式；否則為選擇的 index
 int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected) {
-    BrailleCanvas canvas(term.cols(), term.rows());
+    PixelCanvas canvas(term.cols(), term.rows());
     std::string out;
     std::optional<BeatmapInfo> info;
     int infoFor = -1;
@@ -190,7 +190,7 @@ void playSong(Terminal& term, const Entry& entry, const Settings& settings, Soun
     bool musicStarted = false;
     double songTimeMs = -kLeadInMs;
 
-    BrailleCanvas canvas(term.cols(), term.rows());
+    PixelCanvas canvas(term.cols(), term.rows());
     std::string out;
     auto prev = Clock::now();
     auto nextFrame = prev + kFramePeriod;
@@ -206,15 +206,13 @@ void playSong(Terminal& term, const Entry& entry, const Settings& settings, Soun
         if (canvas.cols() != term.cols() || canvas.rows() != term.rows())
             canvas.resize(term.cols(), term.rows());
 
-        // 版面（每幀依終端尺寸計算）
+        // 版面（每幀依終端尺寸計算）。水平單位＝格，垂直單位＝像素(rows*2)
         const int laneCells = std::clamp((term.cols() - 4) / 7, 2, 10);
         const int playCells = laneCells * 7;
         const int originCol = (term.cols() - playCells) / 2;
-        const int originDotX = originCol * 2;
-        const int laneDotW = laneCells * 2;
         const int judgeRow = term.rows() - 3;
-        const int judgeDotY = judgeRow * 4;
-        const double dotPerMs = judgeDotY / approach;
+        const int judgePxY = judgeRow * 2;
+        const double pxPerMs = judgePxY / approach;
 
         // ---- 輸入 ----
         for (const KeyEvent& e : term.poll()) {
@@ -257,26 +255,26 @@ void playSong(Terminal& term, const Entry& entry, const Settings& settings, Soun
         canvas.clear();
         if (playing) {
             // 判定線
-            canvas.fillDots(originDotX, judgeDotY, originDotX + playCells * 2 - 1, judgeDotY,
-                            kWhite);
+            canvas.fillRect(originCol, judgePxY, originCol + playCells - 1, judgePxY, kWhite);
             // 音符
             const auto& notes = session.notes();
             for (std::size_t i = 0; i < notes.size(); ++i) {
                 if (session.stateOf(i) == NoteState::Done) continue;
                 const ManiaNote& n = notes[i];
                 const bool holding = session.stateOf(i) == NoteState::Holding;
-                const int dx0 = originDotX + n.column * laneDotW;
-                const int dx1 = dx0 + laneDotW - 1;
-                const int headY = holding ? judgeDotY
-                                          : judgeDotY - (int)std::lround((n.startTime - songTimeMs) * dotPerMs);
+                const int cx0 = originCol + n.column * laneCells;
+                const int cx1 = cx0 + laneCells - 1;
+                const int headY =
+                    holding ? judgePxY
+                            : judgePxY - (int)std::lround((n.startTime - songTimeMs) * pxPerMs);
                 if (n.endTime > 0) {  // 長押身體
                     const int tailY =
-                        judgeDotY - (int)std::lround((n.endTime - songTimeMs) * dotPerMs);
-                    canvas.fillDots(dx0, std::min(headY, tailY), dx1, std::max(headY, tailY),
+                        judgePxY - (int)std::lround((n.endTime - songTimeMs) * pxPerMs);
+                    canvas.fillRect(cx0, std::min(headY, tailY), cx1, std::max(headY, tailY),
                                     kLaneColors[n.column]);
                 }
-                if (headY >= 0 && headY <= judgeDotY + 2)
-                    canvas.fillDots(dx0, headY - 1, dx1, headY + 1, kLaneColors[n.column]);
+                if (headY >= 0 && headY <= judgePxY + 2)
+                    canvas.fillRect(cx0, headY - 1, cx1, headY + 1, kLaneColors[n.column]);
             }
 
             // 倒數

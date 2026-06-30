@@ -11,13 +11,9 @@ namespace tui {
 
 namespace {
 
-// Braille 每格 2×4 點的位元：[row][col]，col 0=左 1=右
-constexpr uint8_t kBrailleBits[4][2] = {
-    {0x01, 0x08},
-    {0x02, 0x10},
-    {0x04, 0x20},
-    {0x40, 0x80},
-};
+constexpr uint32_t kFullBlock = 0x2588;   // █
+constexpr uint32_t kUpperHalf = 0x2580;   // ▀
+constexpr uint32_t kLowerHalf = 0x2584;   // ▄
 
 void appendUtf8(std::string& out, uint32_t cp) {
     if (cp < 0x80) {
@@ -131,93 +127,119 @@ std::vector<KeyEvent> Terminal::poll() {
     return events;
 }
 
-// ---------------- BrailleCanvas ----------------
+// ---------------- PixelCanvas ----------------
 
-void BrailleCanvas::resize(int cols, int rows) {
+void PixelCanvas::resize(int cols, int rows) {
     cols_ = std::max(1, cols);
     rows_ = std::max(1, rows);
-    mask_.assign(static_cast<size_t>(cols_) * rows_, 0);
-    cur_.assign(static_cast<size_t>(cols_) * rows_, Cell{' ', 200, 200, 200});
-    prev_.assign(static_cast<size_t>(cols_) * rows_, Cell{0, 0, 0, 0});  // 強制首幀全畫
+    const size_t pixels = static_cast<size_t>(cols_) * rows_ * 2;
+    on_.assign(pixels, 0);
+    px_.assign(pixels, Rgb{0, 0, 0});
+    textCp_.assign(static_cast<size_t>(cols_) * rows_, 0);
+    textColor_.assign(static_cast<size_t>(cols_) * rows_, Rgb{0, 0, 0});
+    prev_.assign(static_cast<size_t>(cols_) * rows_, Cell{1, 1, 1, 1, 1, 1, 1});  // 強制首幀全畫
 }
 
-void BrailleCanvas::clear() {
-    std::fill(mask_.begin(), mask_.end(), 0);
-    std::fill(cur_.begin(), cur_.end(), Cell{' ', 200, 200, 200});
+void PixelCanvas::clear() {
+    std::fill(on_.begin(), on_.end(), 0);
+    std::fill(textCp_.begin(), textCp_.end(), 0);
 }
 
-void BrailleCanvas::setDot(int dx, int dy, Rgb color) {
-    if (dx < 0 || dy < 0 || dx >= dotW() || dy >= dotH()) return;
-    const int cx = dx / 2, cy = dy / 4;
-    const size_t idx = static_cast<size_t>(cy) * cols_ + cx;
-    mask_[idx] |= kBrailleBits[dy % 4][dx % 2];
-    Cell& cell = cur_[idx];
-    cell.r = color.r;
-    cell.g = color.g;
-    cell.b = color.b;
+void PixelCanvas::setPixel(int cx, int py, Rgb color) {
+    if (cx < 0 || py < 0 || cx >= pxW() || py >= pxH()) return;
+    const size_t idx = static_cast<size_t>(py) * cols_ + cx;
+    on_[idx] = 1;
+    px_[idx] = color;
 }
 
-void BrailleCanvas::fillDots(int dx0, int dy0, int dx1, int dy1, Rgb color) {
-    if (dx1 < dx0) std::swap(dx0, dx1);
-    if (dy1 < dy0) std::swap(dy0, dy1);
-    dx0 = std::max(0, dx0);
-    dy0 = std::max(0, dy0);
-    dx1 = std::min(dotW() - 1, dx1);
-    dy1 = std::min(dotH() - 1, dy1);
-    for (int y = dy0; y <= dy1; ++y)
-        for (int x = dx0; x <= dx1; ++x) setDot(x, y, color);
+void PixelCanvas::fillRect(int cx0, int py0, int cx1, int py1, Rgb color) {
+    if (cx1 < cx0) std::swap(cx0, cx1);
+    if (py1 < py0) std::swap(py0, py1);
+    cx0 = std::max(0, cx0);
+    py0 = std::max(0, py0);
+    cx1 = std::min(pxW() - 1, cx1);
+    py1 = std::min(pxH() - 1, py1);
+    for (int y = py0; y <= py1; ++y)
+        for (int x = cx0; x <= cx1; ++x) setPixel(x, y, color);
 }
 
-void BrailleCanvas::putText(int cx, int cy, const std::string& s, Rgb color) {
+void PixelCanvas::putText(int cx, int cy, const std::string& s, Rgb color) {
     if (cy < 0 || cy >= rows_) return;
     int x = cx;
     for (char ch : s) {
         if (x >= cols_) break;
         if (x >= 0) {
             const size_t idx = static_cast<size_t>(cy) * cols_ + x;
-            cur_[idx] = Cell{static_cast<uint32_t>(static_cast<unsigned char>(ch)),
-                             color.r, color.g, color.b};
-            mask_[idx] = 0;  // 文字覆蓋 Braille
+            textCp_[idx] = static_cast<unsigned char>(ch);
+            textColor_[idx] = color;
         }
         ++x;
     }
 }
 
-void BrailleCanvas::flush(std::string& out) {
+void PixelCanvas::flush(std::string& out) {
     out.clear();
     out += "\x1b[?2026h";  // 開始同步輸出：終端機原子換幀，避免半幀撕裂
-    int lastR = 255, lastG = 255, lastB = 255;
-    bool colorSet = false;
+    bool sgrSet = false;
+    int lr = -1, lg = -1, lb = -1, lbr = -1, lbg = -1, lbb = -1;
     int curRow = -1, curCol = -1;
-    char seq[32];
+    char seq[48];
 
     for (int y = 0; y < rows_; ++y) {
         for (int x = 0; x < cols_; ++x) {
-            const size_t idx = static_cast<size_t>(y) * cols_ + x;
-            Cell cell = cur_[idx];
-            if (cell.cp == ' ' && mask_[idx] != 0) cell.cp = 0x2800 + mask_[idx];
-            if (cell.cp == 0) cell.cp = ' ';
-            if (cell == prev_[idx]) continue;
-            prev_[idx] = cell;
+            const size_t cidx = static_cast<size_t>(y) * cols_ + x;
+            Cell cell;
+            if (textCp_[cidx] != 0) {  // 文字覆蓋整格
+                cell.cp = textCp_[cidx];
+                const Rgb c = textColor_[cidx];
+                cell.fr = c.r; cell.fg = c.g; cell.fb = c.b;
+            } else {
+                const size_t topIdx = static_cast<size_t>(y * 2) * cols_ + x;
+                const size_t botIdx = static_cast<size_t>(y * 2 + 1) * cols_ + x;
+                const bool top = on_[topIdx], bot = on_[botIdx];
+                const Rgb tc = px_[topIdx], bc = px_[botIdx];
+                if (!top && !bot) {
+                    cell.cp = ' ';
+                } else if (top && bot) {
+                    if (tc.r == bc.r && tc.g == bc.g && tc.b == bc.b) {
+                        cell.cp = kFullBlock;
+                        cell.fr = tc.r; cell.fg = tc.g; cell.fb = tc.b;
+                    } else {  // 上下不同色：▀ 前景=上、背景=下
+                        cell.cp = kUpperHalf;
+                        cell.fr = tc.r; cell.fg = tc.g; cell.fb = tc.b;
+                        cell.br = bc.r; cell.bg = bc.g; cell.bb = bc.b;
+                    }
+                } else if (top) {
+                    cell.cp = kUpperHalf;
+                    cell.fr = tc.r; cell.fg = tc.g; cell.fb = tc.b;
+                } else {
+                    cell.cp = kLowerHalf;
+                    cell.fr = bc.r; cell.fg = bc.g; cell.fb = bc.b;
+                }
+            }
+
+            if (cell == prev_[cidx]) continue;
+            prev_[cidx] = cell;
 
             if (y != curRow || x != curCol) {
                 std::snprintf(seq, sizeof(seq), "\x1b[%d;%dH", y + 1, x + 1);
                 out += seq;
             }
-            if (!colorSet || cell.r != lastR || cell.g != lastG || cell.b != lastB) {
-                std::snprintf(seq, sizeof(seq), "\x1b[38;2;%d;%d;%dm", cell.r, cell.g, cell.b);
+            if (!sgrSet || cell.fr != lr || cell.fg != lg || cell.fb != lb ||
+                cell.br != lbr || cell.bg != lbg || cell.bb != lbb) {
+                std::snprintf(seq, sizeof(seq), "\x1b[38;2;%d;%d;%d;48;2;%d;%d;%dm", cell.fr,
+                              cell.fg, cell.fb, cell.br, cell.bg, cell.bb);
                 out += seq;
-                lastR = cell.r;
-                lastG = cell.g;
-                lastB = cell.b;
-                colorSet = true;
+                lr = cell.fr; lg = cell.fg; lb = cell.fb;
+                lbr = cell.br; lbg = cell.bg; lbb = cell.bb;
+                sgrSet = true;
             }
             appendUtf8(out, cell.cp);
             curRow = y;
             curCol = x + 1;  // 終端機自動右移
         }
     }
-    out += "\x1b[?2026l";  // 結束同步輸出
+    out += "\x1b[0m\x1b[?2026l";  // 重置色彩、結束同步輸出
 }
 
 }  // namespace tui

@@ -44,37 +44,41 @@ private:
     int rows_ = 24, cols_ = 80;
 };
 
-// 以 Braille（每格 2×4 點）提供次格垂直解析度的畫布；color 為每格一色。
+// 以半塊字元（▀▄█）提供垂直 2 倍次格解析度的實心畫布。
+// 水平單位為「格」，垂直單位為「像素」(= rows*2)，每像素可獨立上色。
 // flush() 只輸出與上一幀不同的格子（diff 渲染）。
-class BrailleCanvas {
+class PixelCanvas {
 public:
-    BrailleCanvas(int cols, int rows) { resize(cols, rows); }
+    PixelCanvas(int cols, int rows) { resize(cols, rows); }
 
     void resize(int cols, int rows);
     void clear();  // 清空本幀內容（保留 prev 以供 diff）
 
     int cols() const { return cols_; }
     int rows() const { return rows_; }
-    int dotW() const { return cols_ * 2; }
-    int dotH() const { return rows_ * 4; }
+    int pxW() const { return cols_; }       // 水平：每格 1 像素
+    int pxH() const { return rows_ * 2; }   // 垂直：每格 2 像素
 
-    void setDot(int dx, int dy, Rgb color);
-    void fillDots(int dx0, int dy0, int dx1, int dy1, Rgb color);  // 含端點的點矩形
-    void putText(int cx, int cy, const std::string& s, Rgb color);
+    void setPixel(int cx, int py, Rgb color);
+    void fillRect(int cx0, int py0, int cx1, int py1, Rgb color);  // 含端點
+    void putText(int cx, int cy, const std::string& s, Rgb color);  // cy 為格列
 
     void flush(std::string& out);  // 產生 diff 輸出並更新 prev
 
 private:
     struct Cell {
-        uint32_t cp;     // 顯示的 codepoint（0 = 空白）
-        uint8_t r, g, b;
+        uint32_t cp = ' ';                 // 顯示的 codepoint
+        uint8_t fr = 0, fg = 0, fb = 0;    // 前景色
+        uint8_t br = 0, bg = 0, bb = 0;    // 背景色
         bool operator==(const Cell&) const = default;
     };
 
     int cols_ = 0, rows_ = 0;
-    std::vector<uint8_t> mask_;   // 每格 Braille 點陣
-    std::vector<Cell> cur_;       // 本幀（文字覆蓋優先於 Braille）
-    std::vector<Cell> prev_;      // 上一幀，用於 diff
+    std::vector<uint8_t> on_;       // 每像素是否填色
+    std::vector<Rgb> px_;           // 每像素顏色
+    std::vector<uint32_t> textCp_;  // 每格文字 codepoint（0 = 無）
+    std::vector<Rgb> textColor_;
+    std::vector<Cell> prev_;        // 上一幀，用於 diff
 };
 
 }  // namespace tui

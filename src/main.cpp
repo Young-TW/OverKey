@@ -27,7 +27,7 @@ int main(int argc, char* argv[]) {
     SongSelect menu{mapsDir};
 
     while (!WindowShouldClose()) {
-        MenuResult choice = menu.run(viewport);
+        MenuResult choice = menu.run(viewport, settings.musicVolume);
         if (choice.action == MenuAction::Quit) break;
 
         if (choice.action == MenuAction::Settings) {

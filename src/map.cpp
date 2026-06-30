@@ -119,6 +119,13 @@ BeatmapInfo loadBeatmapInfo(const std::filesystem::path& filename) {
                     info.mode = std::stoi(keyValue(trimmed));
                 } catch (...) {
                 }
+            } else if (trimmed.rfind("AudioFilename", 0) == 0) {
+                info.audioFilename = keyValue(trimmed);
+            } else if (trimmed.rfind("PreviewTime", 0) == 0) {
+                try {
+                    info.previewTimeMs = std::stoi(keyValue(trimmed));
+                } catch (...) {
+                }
             }
         } else if (section == "[Metadata]") {
             if (trimmed.rfind("Title:", 0) == 0) info.title = keyValue(trimmed);

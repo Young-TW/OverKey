@@ -22,11 +22,13 @@ struct Beatmap {
 struct BeatmapInfo {
     std::string title;
     std::string artist;
-    std::string version;  // 難度名
-    int mode = -1;        // osu 模式：0=std 1=taiko 2=catch 3=mania
+    std::string version;        // 難度名
+    std::string audioFilename;  // [General] AudioFilename
+    int mode = -1;              // osu 模式：0=std 1=taiko 2=catch 3=mania
     int keyCount = 0;
     int noteCount = 0;
-    int lengthMs = 0;  // 最後一個音符時間
+    int lengthMs = 0;        // 最後一個音符時間
+    int previewTimeMs = -1;  // [General] PreviewTime（試聽起點，副歌）；-1=未指定
 };
 
 // 譜面檔頭（只含篩選所需欄位）

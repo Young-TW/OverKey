@@ -1,13 +1,16 @@
 #include <algorithm>
+#include <optional>
 #include <system_error>
 #include <utility>
 
 #include <raylib.h>
 
+#include "raii.h"
 #include "render.h"
 #include "song_select.h"
 
 namespace {
+constexpr double kPreviewDebounce = 0.25;  // hover 後延遲多久才載入試聽，避免快速捲動狂載
 constexpr int kRowH = 46;
 constexpr int kListTop = 170;
 constexpr int kListBottom = 80;  // 底部保留給提示
@@ -50,8 +53,14 @@ void SongSelect::clampScroll() {
     scroll_ = std::max(0, scroll_);
 }
 
-MenuResult SongSelect::run(Viewport& vp) {
+MenuResult SongSelect::run(Viewport& vp, float musicVolume) {
     SetWindowTitle("OverKey - Select Song");
+
+    std::optional<MusicRes> preview;        // 目前試聽
+    std::filesystem::path previewPath;      // 正在播放的音訊檔（空＝無）
+    double selChangedAt = GetTime();        // 上次切換選取的時間（防抖）
+    double previewStart = 0.0;              // 試聽循環的起點（秒）
+    int lastSel = selected_;
 
     while (!WindowShouldClose()) {
         if (IsKeyPressed(KEY_F11)) ToggleBorderlessWindowed();
@@ -63,6 +72,10 @@ MenuResult SongSelect::run(Viewport& vp) {
                         static_cast<int>(entries_.size());
             clampScroll();
             ensureSelectedInfo();
+            if (selected_ != lastSel) {  // 換選取：重啟防抖（先不停試聽）
+                lastSel = selected_;
+                selChangedAt = GetTime();
+            }
 
             if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER)) {
                 return {MenuAction::Play, entries_[selected_].path};
@@ -70,6 +83,40 @@ MenuResult SongSelect::run(Viewport& vp) {
         }
         if (IsKeyPressed(KEY_TAB)) return {MenuAction::Settings, {}};
         if (IsKeyPressed(KEY_ESCAPE)) return {MenuAction::Quit, {}};
+
+        // 副歌試聽：停穩超過防抖時間後，只有「音訊檔不同」才重載
+        //（同一首歌切不同難度→音訊檔相同→續播不重啟）
+        if (!entries_.empty() && GetTime() - selChangedAt > kPreviewDebounce) {
+            const Entry& e = entries_[selected_];
+            std::filesystem::path desired;
+            if (e.info && !e.info->audioFilename.empty())
+                desired = e.path.parent_path() / e.info->audioFilename;
+            if (desired != previewPath) {
+                preview.reset();
+                previewPath = desired;
+                if (!desired.empty()) {
+                    preview.emplace(desired.string().c_str());
+                    if (preview->valid()) {
+                        SetMusicVolume(preview->get(), musicVolume);
+                        PlayMusicStream(preview->get());
+                        previewStart = e.info->previewTimeMs >= 0
+                                           ? e.info->previewTimeMs / 1000.0
+                                           : GetMusicTimeLength(preview->get()) * 0.4;
+                        SeekMusicStream(preview->get(), static_cast<float>(previewStart));
+                    } else {
+                        previewPath.clear();
+                    }
+                }
+            }
+        }
+        if (preview && preview->valid()) {
+            UpdateMusicStream(preview->get());
+            // 播放至結尾 → 回到副歌起點循環
+            if (GetMusicTimePlayed(preview->get()) >=
+                GetMusicTimeLength(preview->get()) - 0.1f) {
+                SeekMusicStream(preview->get(), static_cast<float>(previewStart));
+            }
+        }
 
         vp.begin(Color{18, 18, 24, 255});
         draw();

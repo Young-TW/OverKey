@@ -23,7 +23,8 @@ public:
     explicit SongSelect(std::filesystem::path mapsDir);
 
     // 跑選單迴圈：Enter→Play、Tab→Settings、Esc/關窗→Quit。
-    MenuResult run(Viewport& vp);
+    // musicVolume 用於 hover 副歌試聽。
+    MenuResult run(Viewport& vp, float musicVolume);
 
 private:
     struct Entry {

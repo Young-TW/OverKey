@@ -117,11 +117,17 @@ constexpr int kMenuQuit = -1;
 constexpr int kMenuSettings = -2;
 
 // 回傳 kMenuQuit=離開、kMenuSettings=設定，否則為選擇的 index
-int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected) {
+int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float musicVolume) {
     PixelCanvas canvas(term.cols(), term.rows());
     std::string out;
     std::optional<BeatmapInfo> info;
     int infoFor = -1;
+
+    std::optional<MusicRes> preview;  // hover 副歌試聽
+    fs::path previewPath;             // 正在播放的音訊檔（空＝無）
+    auto selChangedAt = Clock::now();
+    double previewStart = 0.0;
+    int lastSel = selected;
 
     while (true) {
         term.refreshSize();
@@ -139,10 +145,45 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected) {
                 selected = (selected + entries.size() - 1) % entries.size();
             if (e.code == 13 || e.code == 32) return selected;
         }
+        if (selected != lastSel) {  // 換選取：重啟防抖（先不停試聽）
+            lastSel = selected;
+            selChangedAt = Clock::now();
+        }
 
         if (!entries.empty() && selected != infoFor) {
             info = loadBeatmapInfo(entries[selected].path);
             infoFor = selected;
+        }
+
+        // 副歌試聽：停穩後只有「音訊檔不同」才重載（同曲切難度→續播不重啟）
+        if (!entries.empty() && info &&
+            std::chrono::duration<double>(Clock::now() - selChangedAt).count() > 0.25) {
+            fs::path desired;
+            if (!info->audioFilename.empty())
+                desired = entries[selected].path.parent_path() / info->audioFilename;
+            if (desired != previewPath) {
+                preview.reset();
+                previewPath = desired;
+                if (!desired.empty()) {
+                    preview.emplace(desired.string().c_str());
+                    if (preview->valid()) {
+                        SetMusicVolume(preview->get(), musicVolume);
+                        PlayMusicStream(preview->get());
+                        previewStart = info->previewTimeMs >= 0
+                                           ? info->previewTimeMs / 1000.0
+                                           : GetMusicTimeLength(preview->get()) * 0.4;
+                        SeekMusicStream(preview->get(), (float)previewStart);
+                    } else {
+                        previewPath.clear();
+                    }
+                }
+            }
+        }
+        if (preview && preview->valid()) {
+            UpdateMusicStream(preview->get());
+            if (GetMusicTimePlayed(preview->get()) >=
+                GetMusicTimeLength(preview->get()) - 0.1f)
+                SeekMusicStream(preview->get(), (float)previewStart);
         }
 
         canvas.clear();
@@ -150,7 +191,7 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected) {
         canvas.putText(2, 2, "up/down move   enter play   tab settings   q quit", kGray);
 
         if (entries.empty()) {
-            canvas.putText(2, 4, "no mania 7K maps found", judgeRgb(Judgment::Miss));
+            canvas.putText(2, 4, "no mania 4K/7K maps found", judgeRgb(Judgment::Miss));
         } else {
             const int top = 4;
             const int visible = term.rows() - top - 2;
@@ -491,7 +532,7 @@ int main(int argc, char* argv[]) {
         Terminal term;  // RAII：raw mode / alt screen / kitty
         int selected = 0;
         while (true) {
-            const int choice = runMenu(term, entries, selected);
+            const int choice = runMenu(term, entries, selected, settings.musicVolume);
             if (choice == kMenuQuit) break;
             if (choice == kMenuSettings) {
                 runSettings(term, settings);

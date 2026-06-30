@@ -13,9 +13,15 @@ struct Rgb {
     uint8_t r, g, b;
 };
 
+// 方向鍵以負值表示，避免與 unicode keycode 衝突
+inline constexpr int kKeyUp = -1;
+inline constexpr int kKeyDown = -2;
+inline constexpr int kKeyRight = -3;
+inline constexpr int kKeyLeft = -4;
+
 // 一次鍵盤事件（透過 Kitty keyboard protocol 取得）
 struct KeyEvent {
-    int code;  // Kitty keycode（字母為小寫 unicode；Esc=27、Enter=13、Space=32）
+    int code;  // Kitty keycode（字母為小寫 unicode；Esc=27、Enter=13、Space=32；方向鍵見上）
     enum Type { Press = 1, Repeat = 2, Release = 3 } type;
 };
 
@@ -44,8 +50,8 @@ private:
     int rows_ = 24, cols_ = 80;
 };
 
-// 以半塊字元（▀▄█）提供垂直 2 倍次格解析度的實心畫布。
-// 水平單位為「格」，垂直單位為「像素」(= rows*2)，每像素可獨立上色。
+// 以八分塊字元（▁▂…▇█）提供垂直 8 倍次格解析度的實心畫布。
+// 水平單位為「格」，垂直單位為「像素」(= rows*8)，每像素可獨立上色。
 // flush() 只輸出與上一幀不同的格子（diff 渲染）。
 class PixelCanvas {
 public:
@@ -57,7 +63,7 @@ public:
     int cols() const { return cols_; }
     int rows() const { return rows_; }
     int pxW() const { return cols_; }       // 水平：每格 1 像素
-    int pxH() const { return rows_ * 2; }   // 垂直：每格 2 像素
+    int pxH() const { return rows_ * 8; }   // 垂直：每格 8 像素
 
     void setPixel(int cx, int py, Rgb color);
     void fillRect(int cx0, int py0, int cx1, int py1, Rgb color);  // 含端點

@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <optional>
@@ -17,8 +18,12 @@
 #include "tui.h"
 
 namespace fs = std::filesystem;
-using tui::PixelCanvas;
 using tui::KeyEvent;
+using tui::kKeyDown;
+using tui::kKeyLeft;
+using tui::kKeyRight;
+using tui::kKeyUp;
+using tui::PixelCanvas;
 using tui::Rgb;
 using tui::Terminal;
 using Clock = std::chrono::steady_clock;
@@ -105,7 +110,10 @@ std::vector<Entry> scanMaps(const fs::path& dir) {
 
 constexpr auto kFramePeriod = std::chrono::microseconds(1000000 / 1000);  // 目標 1000fps
 
-// 回傳 -1 = 離開程式；否則為選擇的 index
+constexpr int kMenuQuit = -1;
+constexpr int kMenuSettings = -2;
+
+// 回傳 kMenuQuit=離開、kMenuSettings=設定，否則為選擇的 index
 int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected) {
     PixelCanvas canvas(term.cols(), term.rows());
     std::string out;
@@ -119,10 +127,12 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected) {
 
         for (const KeyEvent& e : term.poll()) {
             if (e.type != KeyEvent::Press) continue;
-            if (e.code == 27 || e.code == 'q' || e.code == 3) return -1;
+            if (e.code == 27 || e.code == 'q' || e.code == 3) return kMenuQuit;
+            if (e.code == 9) return kMenuSettings;  // Tab
             if (entries.empty()) continue;
-            if (e.code == 'j') selected = (selected + 1) % entries.size();
-            if (e.code == 'k')
+            if (e.code == 'j' || e.code == kKeyDown)
+                selected = (selected + 1) % entries.size();
+            if (e.code == 'k' || e.code == kKeyUp)
                 selected = (selected + entries.size() - 1) % entries.size();
             if (e.code == 13 || e.code == 32) return selected;
         }
@@ -134,7 +144,7 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected) {
 
         canvas.clear();
         canvas.putText(2, 1, "OVERKEY  (TUI)", kGold);
-        canvas.putText(2, 2, "j/k move   enter play   q quit", kGray);
+        canvas.putText(2, 2, "up/down move   enter play   tab settings   q quit", kGray);
 
         if (entries.empty()) {
             canvas.putText(2, 4, "no mania 7K maps found", judgeRgb(Judgment::Miss));
@@ -211,7 +221,7 @@ void playSong(Terminal& term, const Entry& entry, const Settings& settings, Soun
         const int playCells = laneCells * 7;
         const int originCol = (term.cols() - playCells) / 2;
         const int judgeRow = term.rows() - 3;
-        const int judgePxY = judgeRow * 2;
+        const int judgePxY = judgeRow * 8;
         const double pxPerMs = judgePxY / approach;
 
         // ---- 輸入 ----
@@ -254,8 +264,9 @@ void playSong(Terminal& term, const Entry& entry, const Settings& settings, Soun
         // ---- 渲染 ----
         canvas.clear();
         if (playing) {
-            // 判定線
-            canvas.fillRect(originCol, judgePxY, originCol + playCells - 1, judgePxY, kWhite);
+            // 判定線（3 像素粗）
+            canvas.fillRect(originCol, judgePxY - 1, originCol + playCells - 1, judgePxY + 1,
+                            kWhite);
             // 音符
             const auto& notes = session.notes();
             for (std::size_t i = 0; i < notes.size(); ++i) {
@@ -273,8 +284,8 @@ void playSong(Terminal& term, const Entry& entry, const Settings& settings, Soun
                     canvas.fillRect(cx0, std::min(headY, tailY), cx1, std::max(headY, tailY),
                                     kLaneColors[n.column]);
                 }
-                if (headY >= 0 && headY <= judgePxY + 2)
-                    canvas.fillRect(cx0, headY - 1, cx1, headY + 1, kLaneColors[n.column]);
+                if (headY >= 0 && headY <= judgePxY + 4)
+                    canvas.fillRect(cx0, headY - 3, cx1, headY + 1, kLaneColors[n.column]);
             }
 
             // 倒數
@@ -345,6 +356,99 @@ void playSong(Terminal& term, const Entry& entry, const Settings& settings, Soun
     }
 }
 
+std::string keyLabel(int code) {
+    if (code == 32) return "SPACE";
+    if (code >= 33 && code <= 126) return std::string(1, (char)code);
+    return "#" + std::to_string(code);
+}
+
+// 字母鍵改存大寫，與 GUI（raylib keycode）一致
+int toStoredKey(int kittyCode) {
+    return (kittyCode >= 'a' && kittyCode <= 'z') ? kittyCode - 32 : kittyCode;
+}
+
+// 設定畫面：方向鍵/jk 選欄位、左右/hl 調整、enter 重綁鍵、esc 存檔返回
+void runSettings(Terminal& term, Settings& settings) {
+    PixelCanvas canvas(term.cols(), term.rows());
+    std::string out;
+    constexpr int kBase = 4;          // 前 4 項為數值欄位
+    constexpr int kFields = kBase + 7;
+    int selected = 0;
+    int rebinding = -1;
+    auto next = Clock::now();
+
+    while (true) {
+        term.refreshSize();
+        if (canvas.cols() != term.cols() || canvas.rows() != term.rows())
+            canvas.resize(term.cols(), term.rows());
+
+        for (const KeyEvent& e : term.poll()) {
+            if (e.type != KeyEvent::Press) continue;
+            if (rebinding >= 0) {
+                if (e.code == 27) {
+                    rebinding = -1;  // 取消
+                } else if (e.code >= 32 && e.code <= 126) {  // 僅接受可列印鍵
+                    settings.keys[rebinding] = toStoredKey(e.code);
+                    rebinding = -1;
+                }
+                continue;
+            }
+            if (e.code == 27 || e.code == 'q' || e.code == 9) return;  // 存檔由呼叫端負責
+            if (e.code == 'j' || e.code == kKeyDown) selected = (selected + 1) % kFields;
+            if (e.code == 'k' || e.code == kKeyUp)
+                selected = (selected + kFields - 1) % kFields;
+            const int dir = (e.code == kKeyRight || e.code == 'l') ? 1
+                            : (e.code == kKeyLeft || e.code == 'h') ? -1
+                                                                    : 0;
+            if (selected == 0 && dir)
+                settings.audioOffsetMs = std::clamp(settings.audioOffsetMs + dir * 5, -300, 300);
+            else if (selected == 1 && dir)
+                settings.scrollSpeed = std::clamp(settings.scrollSpeed + dir * 0.1f, 0.5f, 4.0f);
+            else if (selected == 2 && dir)
+                settings.musicVolume = std::clamp(settings.musicVolume + dir * 0.05f, 0.0f, 1.0f);
+            else if (selected == 3 && dir)
+                settings.effectVolume = std::clamp(settings.effectVolume + dir * 0.05f, 0.0f, 1.0f);
+            else if (selected >= kBase && (e.code == 13 || e.code == 32))
+                rebinding = selected - kBase;
+        }
+
+        canvas.clear();
+        canvas.putText(2, 1, "SETTINGS", kGold);
+        char buf[64];
+        auto row = [&](int idx, const char* label, const std::string& val, int y) {
+            const bool sel = (idx == selected);
+            const Rgb lc = sel ? kWhite : kGray;
+            canvas.putText(4, y, (sel ? "> " : "  ") + std::string(label), lc);
+            canvas.putText(28, y, val, sel ? kGold : kWhite);
+        };
+        int y = 3;
+        std::snprintf(buf, sizeof(buf), "%+d ms", settings.audioOffsetMs);
+        row(0, "Audio offset", buf, y++);
+        std::snprintf(buf, sizeof(buf), "%.1fx", settings.scrollSpeed);
+        row(1, "Scroll speed", buf, y++);
+        std::snprintf(buf, sizeof(buf), "%d%%", (int)(settings.musicVolume * 100));
+        row(2, "Music volume", buf, y++);
+        std::snprintf(buf, sizeof(buf), "%d%%", (int)(settings.effectVolume * 100));
+        row(3, "Effect volume", buf, y++);
+        ++y;
+        canvas.putText(4, y++, "KEYBINDS", kGray);
+        for (int i = 0; i < 7; ++i) {
+            std::snprintf(buf, sizeof(buf), "Lane %d", i + 1);
+            const std::string val =
+                (rebinding == i) ? "press a key..." : keyLabel(settings.keys[i]);
+            row(kBase + i, buf, val, y++);
+        }
+        canvas.putText(4, term.rows() - 2,
+                       "up/down field   left/right adjust   enter rebind   esc save", kGray);
+
+        canvas.flush(out);
+        term.write(out);
+        next += std::chrono::milliseconds(16);
+        std::this_thread::sleep_until(next);
+        if (next < Clock::now()) next = Clock::now();
+    }
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -365,8 +469,15 @@ int main(int argc, char* argv[]) {
     {
         Terminal term;  // RAII：raw mode / alt screen / kitty
         int selected = 0;
-        int choice;
-        while ((choice = runMenu(term, entries, selected)) >= 0) {
+        while (true) {
+            const int choice = runMenu(term, entries, selected);
+            if (choice == kMenuQuit) break;
+            if (choice == kMenuSettings) {
+                runSettings(term, settings);
+                saveSettings(settings, kConfigFile);
+                SetSoundVolume(hit, settings.effectVolume);  // 套用新音效音量
+                continue;
+            }
             playSong(term, entries[choice], settings, hit);
         }
     }  // 還原終端機

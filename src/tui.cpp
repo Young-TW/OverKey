@@ -11,9 +11,8 @@ namespace tui {
 
 namespace {
 
-constexpr uint32_t kFullBlock = 0x2588;   // █
-constexpr uint32_t kUpperHalf = 0x2580;   // ▀
-constexpr uint32_t kLowerHalf = 0x2584;   // ▄
+// 下方 n/8 實心塊：n=1→▁ … n=8→█（0x2580+n）
+constexpr uint32_t lowerEighth(int n) { return 0x2580u + static_cast<uint32_t>(n); }
 
 void appendUtf8(std::string& out, uint32_t cp) {
     if (cp < 0x80) {
@@ -103,6 +102,16 @@ std::vector<KeyEvent> Terminal::poll() {
 
         const char final = buf_[j];
         const std::string body = buf_.substr(i + 2, j - (i + 2));
+        // 事件類型在參數最後一段 ":event"，預設 1（按下）
+        auto eventType = [](const std::string& b) {
+            const size_t c = b.rfind(':');
+            if (c == std::string::npos) return 1;
+            try {
+                return std::stoi(b.substr(c + 1));
+            } catch (...) {
+                return 1;
+            }
+        };
         if (final == 'u') {
             // Kitty: keycode[:alt][;mods[:event]]
             try {
@@ -110,17 +119,18 @@ std::vector<KeyEvent> Terminal::poll() {
                 std::string keyfield = (semi == std::string::npos) ? body : body.substr(0, semi);
                 const size_t kc = keyfield.find(':');
                 const int code = std::stoi(keyfield.substr(0, kc));
-                int ev = 1;
-                if (semi != std::string::npos) {
-                    const std::string rest = body.substr(semi + 1);
-                    const size_t c2 = rest.find(':');
-                    if (c2 != std::string::npos) ev = std::stoi(rest.substr(c2 + 1));
-                }
+                int ev = (semi == std::string::npos) ? 1 : eventType(body);
                 events.push_back({code, static_cast<KeyEvent::Type>(ev)});
             } catch (...) {
             }
+        } else if (final >= 'A' && final <= 'D') {
+            // 方向鍵（含 kitty 事件類型，如 \e[1;1:3A）
+            const int code = (final == 'A')   ? kKeyUp
+                             : (final == 'B') ? kKeyDown
+                             : (final == 'C') ? kKeyRight
+                                              : kKeyLeft;
+            events.push_back({code, static_cast<KeyEvent::Type>(eventType(body))});
         }
-        // 其他 CSI（方向鍵等 legacy）在此忽略
         i = j + 1;
     }
     buf_.erase(0, i);
@@ -132,7 +142,7 @@ std::vector<KeyEvent> Terminal::poll() {
 void PixelCanvas::resize(int cols, int rows) {
     cols_ = std::max(1, cols);
     rows_ = std::max(1, rows);
-    const size_t pixels = static_cast<size_t>(cols_) * rows_ * 2;
+    const size_t pixels = static_cast<size_t>(cols_) * rows_ * 8;
     on_.assign(pixels, 0);
     px_.assign(pixels, Rgb{0, 0, 0});
     textCp_.assign(static_cast<size_t>(cols_) * rows_, 0);
@@ -194,27 +204,30 @@ void PixelCanvas::flush(std::string& out) {
                 const Rgb c = textColor_[cidx];
                 cell.fr = c.r; cell.fg = c.g; cell.fb = c.b;
             } else {
-                const size_t topIdx = static_cast<size_t>(y * 2) * cols_ + x;
-                const size_t botIdx = static_cast<size_t>(y * 2 + 1) * cols_ + x;
-                const bool top = on_[topIdx], bot = on_[botIdx];
-                const Rgb tc = px_[topIdx], bc = px_[botIdx];
-                if (!top && !bot) {
-                    cell.cp = ' ';
-                } else if (top && bot) {
-                    if (tc.r == bc.r && tc.g == bc.g && tc.b == bc.b) {
-                        cell.cp = kFullBlock;
-                        cell.fr = tc.r; cell.fg = tc.g; cell.fb = tc.b;
-                    } else {  // 上下不同色：▀ 前景=上、背景=下
-                        cell.cp = kUpperHalf;
-                        cell.fr = tc.r; cell.fg = tc.g; cell.fb = tc.b;
-                        cell.br = bc.r; cell.bg = bc.g; cell.bb = bc.b;
+                // 取本格 8 個子像素，找填色範圍（音符為連續色帶）
+                int first = -1, last = -1;
+                Rgb color{0, 0, 0};
+                for (int s = 0; s < 8; ++s) {
+                    const size_t pidx = static_cast<size_t>(y * 8 + s) * cols_ + x;
+                    if (on_[pidx]) {
+                        if (first < 0) {
+                            first = s;
+                            color = px_[pidx];
+                        }
+                        last = s;
                     }
-                } else if (top) {
-                    cell.cp = kUpperHalf;
-                    cell.fr = tc.r; cell.fg = tc.g; cell.fb = tc.b;
-                } else {
-                    cell.cp = kLowerHalf;
-                    cell.fr = bc.r; cell.fg = bc.g; cell.fb = bc.b;
+                }
+                if (first < 0) {
+                    cell.cp = ' ';
+                } else if (first == 0 && last == 7) {  // 整格滿
+                    cell.cp = lowerEighth(8);
+                    cell.fr = color.r; cell.fg = color.g; cell.fb = color.b;
+                } else if (first == 0) {  // 上緣對齊：背景=色，下方挖空
+                    cell.cp = lowerEighth(8 - (last + 1));
+                    cell.br = color.r; cell.bg = color.g; cell.bb = color.b;  // fg 維持黑
+                } else {  // 下緣對齊／中段（近似為下對齊）
+                    cell.cp = lowerEighth(last - first + 1);
+                    cell.fr = color.r; cell.fg = color.g; cell.fb = color.b;
                 }
             }
 

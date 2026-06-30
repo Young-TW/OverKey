@@ -14,6 +14,7 @@ struct ManiaNote {
 struct Beatmap {
     std::string title;          // [Metadata] Title
     std::string audioFilename;  // [General] AudioFilename（相對於 .osu 所在目錄）
+    int keyCount = 7;           // 音軌數（[Difficulty] CircleSize）
     std::vector<ManiaNote> notes;
 };
 
@@ -32,7 +33,8 @@ struct BeatmapInfo {
 struct BeatmapHeader {
     int mode = -1;
     int keyCount = 0;
-    bool isMania7K() const { return mode == 3 && keyCount == 7; }
+    // 目前支援的 mania 鍵數：4K 與 7K
+    bool isSupported() const { return mode == 3 && (keyCount == 4 || keyCount == 7); }
 };
 
 // 極輕量探測：只讀到 [HitObjects] 前就停，用於大量譜面庫的快速篩選

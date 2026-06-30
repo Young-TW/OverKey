@@ -28,13 +28,18 @@ private:
     Settings settings_;
     PlaySession session_;
 
+    int keyCount_ = 7;          // 音軌數（4 或 7）
+    const int* laneKeys_ = nullptr;  // 對應鍵位集（指向 settings_.keys / keys4）
+    int playfieldW_ = 0;
+    int originX_ = 0;
+
     double offsetMs_ = 0.0;    // = settings_.audioOffsetMs
     double approachMs_ = 0.0;  // 下落時間，由 scrollSpeed 決定
     double pxPerMs_ = 0.0;     // 下落速度
 
     Phase phase_ = Phase::Playing;
 
-    // 命中回饋（用牆鐘計時，與遊戲邏輯時鐘分開）
+    // 命中回饋（用牆鐘計時，與遊戲邏輯時鐘分開）；上限 7 軌
     std::array<double, 7> laneFlash_{};
     std::array<Judgment, 7> laneFlashJudge_{};
 };

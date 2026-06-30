@@ -14,12 +14,9 @@
 namespace {
 
 // ---- 版面常數 ----
-constexpr int kCols = 7;
 constexpr int kLaneW = 80;
-constexpr int kPlayfieldW = kCols * kLaneW;        // 560
-constexpr int kScreenW = kPlayfieldW + 360;        // = kVirtualW
+constexpr int kScreenW = 920;                      // = kVirtualW
 constexpr int kScreenH = 920;                      // = kVirtualH
-constexpr int kOriginX = (kScreenW - kPlayfieldW) / 2;
 constexpr float kJudgeY = kScreenH - 140.0f;       // 判定線 Y
 constexpr float kNoteH = 22.0f;
 
@@ -27,15 +24,15 @@ constexpr double kBaseApproachMs = 550.0;          // scrollSpeed=1 時的下落
 constexpr double kLeadInMs = 2000.0;               // 開場倒數
 constexpr double kFlashDur = 0.18;                 // 命中閃光秒數
 
-constexpr Color kLaneColors[kCols] = {
-    {60, 60, 70, 255},  {45, 45, 55, 255},  {60, 60, 70, 255},
-    {70, 55, 80, 255},
-    {60, 60, 70, 255},  {45, 45, 55, 255},  {60, 60, 70, 255},
-};
-
-constexpr Color kNoteColors[kCols] = {
-    SKYBLUE, WHITE, SKYBLUE, GOLD, SKYBLUE, WHITE, SKYBLUE,
-};
+// 依鍵數產生音軌配色：奇數鍵的正中央為 GOLD，其餘藍/白交替
+Color noteColor(int col, int keyCount) {
+    if (keyCount % 2 == 1 && col == keyCount / 2) return GOLD;
+    return (col % 2 == 0) ? SKYBLUE : WHITE;
+}
+Color laneBg(int col, int keyCount) {
+    if (keyCount % 2 == 1 && col == keyCount / 2) return Color{70, 55, 80, 255};
+    return (col % 2 == 0) ? Color{60, 60, 70, 255} : Color{45, 45, 55, 255};
+}
 
 Color judgeColor(Judgment j) {
     switch (j) {
@@ -47,8 +44,6 @@ Color judgeColor(Judgment j) {
         default:                return GRAY;
     }
 }
-
-float laneX(int col) { return kOriginX + col * kLaneW; }
 
 // 給定音符時間，回傳此刻頭部中心的 Y
 float noteY(int noteTimeMs, double songTimeMs, double pxPerMs) {
@@ -82,6 +77,10 @@ Game::Game(Beatmap map, std::filesystem::path audioPath, Settings settings)
       audioPath_(std::move(audioPath)),
       settings_(settings),
       session_(map_.notes),
+      keyCount_(map_.keyCount == 4 ? 4 : 7),
+      laneKeys_(keyCount_ == 4 ? settings_.keys4.data() : settings_.keys.data()),
+      playfieldW_(keyCount_ * kLaneW),
+      originX_((kScreenW - playfieldW_) / 2),
       offsetMs_(settings.audioOffsetMs),
       approachMs_(kBaseApproachMs / settings.scrollSpeed),
       pxPerMs_(kJudgeY / approachMs_) {
@@ -123,9 +122,9 @@ void Game::run(Viewport& vp) {
             songTimeMs = clock.timeMs() + offsetMs_;
 
             // 輸入 → core
-            for (int c = 0; c < kCols; ++c) {
-                if (IsKeyPressed(settings_.keys[c])) session_.press(c, songTimeMs);
-                if (IsKeyReleased(settings_.keys[c])) session_.release(c, songTimeMs);
+            for (int c = 0; c < keyCount_; ++c) {
+                if (IsKeyPressed(laneKeys_[c])) session_.press(c, songTimeMs);
+                if (IsKeyReleased(laneKeys_[c])) session_.release(c, songTimeMs);
             }
             session_.advance(songTimeMs);
 
@@ -164,24 +163,26 @@ void Game::triggerFlash(int lane, Judgment j) {
 }
 
 void Game::drawPlayfield(double songTimeMs) const {
+    auto laneX = [&](int c) { return static_cast<float>(originX_ + c * kLaneW); };
+
     // 軌道底色（按下時提亮）
-    for (int c = 0; c < kCols; ++c) {
-        Color col = kLaneColors[c];
-        if (IsKeyDown(settings_.keys[c])) {
+    for (int c = 0; c < keyCount_; ++c) {
+        Color col = laneBg(c, keyCount_);
+        if (IsKeyDown(laneKeys_[c])) {
             col = Color{static_cast<unsigned char>(std::min(255, col.r + 40)),
                         static_cast<unsigned char>(std::min(255, col.g + 40)),
                         static_cast<unsigned char>(std::min(255, col.b + 40)), 255};
         }
         DrawRectangle(static_cast<int>(laneX(c)), 0, kLaneW, kScreenH, col);
     }
-    for (int c = 0; c <= kCols; ++c) {
+    for (int c = 0; c <= keyCount_; ++c) {
         DrawLine(static_cast<int>(laneX(c)), 0, static_cast<int>(laneX(c)), kScreenH,
                  Color{30, 30, 38, 255});
     }
 
     // 命中閃光（判定線上的淡出光暈，依判定著色）
     const double now = GetTime();
-    for (int c = 0; c < kCols; ++c) {
+    for (int c = 0; c < keyCount_; ++c) {
         const double dt = now - laneFlash_[c];
         if (dt < 0.0 || dt >= kFlashDur) continue;
         const float a = static_cast<float>(1.0 - dt / kFlashDur);
@@ -193,7 +194,7 @@ void Game::drawPlayfield(double songTimeMs) const {
     }
 
     // 判定線
-    DrawRectangle(kOriginX, static_cast<int>(kJudgeY) - 3, kPlayfieldW, 6, RAYWHITE);
+    DrawRectangle(originX_, static_cast<int>(kJudgeY) - 3, playfieldW_, 6, RAYWHITE);
 
     // 音符（含長押尾巴），只畫尚未完成、且在畫面範圍內的
     const auto& notes = session_.notes();
@@ -206,16 +207,16 @@ void Game::drawPlayfield(double songTimeMs) const {
 
         const float x = laneX(n.column) + 4;
         const float w = kLaneW - 8;
+        const Color nc = noteColor(n.column, keyCount_);
 
         if (n.endTime > 0) {  // 長押身體
             const float tailY = noteY(n.endTime, songTimeMs, pxPerMs_);
             const float top = std::min(headY, tailY);
             const float h = std::abs(headY - tailY) + kNoteH;
             DrawRectangleRounded({x, top - kNoteH / 2, w, h}, 0.4f, 4,
-                                 Fade(kNoteColors[n.column], holding ? 0.85f : 0.55f));
+                                 Fade(nc, holding ? 0.85f : 0.55f));
         }
-        DrawRectangleRounded({x, headY - kNoteH / 2, w, kNoteH}, 0.4f, 4,
-                             kNoteColors[n.column]);
+        DrawRectangleRounded({x, headY - kNoteH / 2, w, kNoteH}, 0.4f, 4, nc);
     }
 
     // 開場倒數
@@ -223,7 +224,7 @@ void Game::drawPlayfield(double songTimeMs) const {
         const int sec = static_cast<int>(std::ceil(-songTimeMs / 1000.0));
         const char* txt = TextFormat("%d", sec);
         const int fs = 120;
-        DrawText(txt, kOriginX + kPlayfieldW / 2 - MeasureText(txt, fs) / 2,
+        DrawText(txt, originX_ + playfieldW_ / 2 - MeasureText(txt, fs) / 2,
                  kScreenH / 2 - fs / 2, fs, Fade(RAYWHITE, 0.6f));
     }
 
@@ -247,16 +248,16 @@ void Game::drawPlayfield(double songTimeMs) const {
     if (session_.lastJudgment() != Judgment::None) {
         const char* jtxt = judgeName(session_.lastJudgment());
         const int fs = 40;
-        DrawText(jtxt, kOriginX + kPlayfieldW / 2 - MeasureText(jtxt, fs) / 2,
+        DrawText(jtxt, originX_ + playfieldW_ / 2 - MeasureText(jtxt, fs) / 2,
                  static_cast<int>(kJudgeY) - 120, fs, judgeColor(session_.lastJudgment()));
     }
 
     // 鍵位提示
-    for (int c = 0; c < kCols; ++c) {
+    for (int c = 0; c < keyCount_; ++c) {
         const int fs = 22;
-        const std::string k = (settings_.keys[c] == KEY_SPACE)
+        const std::string k = (laneKeys_[c] == KEY_SPACE)
                                   ? "SPC"
-                                  : std::string(1, static_cast<char>(settings_.keys[c]));
+                                  : std::string(1, static_cast<char>(laneKeys_[c]));
         DrawText(k.c_str(),
                  static_cast<int>(laneX(c)) + kLaneW / 2 - MeasureText(k.c_str(), fs) / 2,
                  static_cast<int>(kJudgeY) + 20, fs, Fade(RAYWHITE, 0.5f));

@@ -34,13 +34,16 @@ constexpr const char* kConfigFile = "overkey.cfg";
 constexpr double kLeadInMs = 2000.0;
 constexpr double kBaseApproachMs = 550.0;
 
-const Rgb kLaneColors[7] = {
-    {102, 191, 255}, {235, 235, 235}, {102, 191, 255}, {255, 203, 0},
-    {102, 191, 255}, {235, 235, 235}, {102, 191, 255},
-};
 const Rgb kWhite{235, 235, 235};
 const Rgb kGray{130, 130, 130};
 const Rgb kGold{255, 203, 0};
+const Rgb kSky{102, 191, 255};
+
+// 依鍵數產生音軌配色：奇數鍵正中央為金色，其餘藍/白交替
+Rgb laneColor(int col, int keyCount) {
+    if (keyCount % 2 == 1 && col == keyCount / 2) return kGold;
+    return (col % 2 == 0) ? kSky : kWhite;
+}
 
 Rgb judgeRgb(Judgment j) {
     switch (j) {
@@ -55,9 +58,9 @@ Rgb judgeRgb(Judgment j) {
 
 int normKey(int k) { return (k >= 'A' && k <= 'Z') ? k + 32 : k; }
 
-int laneOf(int code, const Settings& s) {
-    for (int c = 0; c < 7; ++c)
-        if (normKey(s.keys[c]) == normKey(code)) return c;
+int laneOf(int code, const int* keys, int keyCount) {
+    for (int c = 0; c < keyCount; ++c)
+        if (normKey(keys[c]) == normKey(code)) return c;
     return -1;
 }
 
@@ -99,7 +102,7 @@ std::vector<Entry> scanMaps(const fs::path& dir) {
              dir, fs::directory_options::skip_permission_denied, ec);
          !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
         const auto& p = it->path();
-        if (p.extension() == ".osu" && probeBeatmap(p).isMania7K()) {
+        if (p.extension() == ".osu" && probeBeatmap(p).isSupported()) {
             out.push_back({p, p.lexically_relative(dir).replace_extension("").string()});
         }
     }
@@ -188,6 +191,8 @@ void playSong(Terminal& term, const Entry& entry, const Settings& settings, Soun
     if (map.notes.empty()) return;
 
     PlaySession session(map.notes);
+    const int keyCount = (map.keyCount == 4) ? 4 : 7;
+    const int* laneKeys = (keyCount == 4) ? settings.keys4.data() : settings.keys.data();
     const double offset = settings.audioOffsetMs;
     const double approach = kBaseApproachMs / settings.scrollSpeed;
 
@@ -216,9 +221,9 @@ void playSong(Terminal& term, const Entry& entry, const Settings& settings, Soun
         if (canvas.cols() != term.cols() || canvas.rows() != term.rows())
             canvas.resize(term.cols(), term.rows());
 
-        // 版面（每幀依終端尺寸計算）。水平單位＝格，垂直單位＝像素(rows*2)
-        const int laneCells = std::clamp((term.cols() - 4) / 7, 2, 10);
-        const int playCells = laneCells * 7;
+        // 版面（每幀依終端尺寸計算）。水平單位＝格，垂直單位＝像素(rows*8)
+        const int laneCells = std::clamp((term.cols() - 4) / keyCount, 2, 12);
+        const int playCells = laneCells * keyCount;
         const int originCol = (term.cols() - playCells) / 2;
         const int judgeRow = term.rows() - 3;
         const int judgePxY = judgeRow * 8;
@@ -231,7 +236,7 @@ void playSong(Terminal& term, const Entry& entry, const Settings& settings, Soun
                 return;  // 回選單
             }
             if (playing) {
-                const int lane = laneOf(e.code, settings);
+                const int lane = laneOf(e.code, laneKeys, keyCount);
                 if (lane < 0) continue;
                 if (e.type == KeyEvent::Press) session.press(lane, songTimeMs);
                 else if (e.type == KeyEvent::Release) session.release(lane, songTimeMs);
@@ -278,14 +283,15 @@ void playSong(Terminal& term, const Entry& entry, const Settings& settings, Soun
                 const int headY =
                     holding ? judgePxY
                             : judgePxY - (int)std::lround((n.startTime - songTimeMs) * pxPerMs);
+                const Rgb nc = laneColor(n.column, keyCount);
                 if (n.endTime > 0) {  // 長押身體
                     const int tailY =
                         judgePxY - (int)std::lround((n.endTime - songTimeMs) * pxPerMs);
                     canvas.fillRect(cx0, std::min(headY, tailY), cx1, std::max(headY, tailY),
-                                    kLaneColors[n.column]);
+                                    nc);
                 }
                 if (headY >= 0 && headY <= judgePxY + 4)
-                    canvas.fillRect(cx0, headY - 3, cx1, headY + 1, kLaneColors[n.column]);
+                    canvas.fillRect(cx0, headY - 3, cx1, headY + 1, nc);
             }
 
             // 倒數
@@ -309,10 +315,10 @@ void playSong(Terminal& term, const Entry& entry, const Settings& settings, Soun
                                judgeRow - 2, jt, judgeRgb(session.lastJudgment()));
             }
             // 鍵位提示
-            for (int c = 0; c < 7; ++c) {
-                std::string k = (settings.keys[c] == 32)
+            for (int c = 0; c < keyCount; ++c) {
+                std::string k = (laneKeys[c] == 32)
                                     ? "SP"
-                                    : std::string(1, (char)normKey(settings.keys[c]));
+                                    : std::string(1, (char)normKey(laneKeys[c]));
                 canvas.putText(originCol + c * laneCells + laneCells / 2, judgeRow + 1, k,
                                kGray);
             }
@@ -371,10 +377,17 @@ int toStoredKey(int kittyCode) {
 void runSettings(Terminal& term, Settings& settings) {
     PixelCanvas canvas(term.cols(), term.rows());
     std::string out;
-    constexpr int kBase = 4;          // 前 4 項為數值欄位
-    constexpr int kFields = kBase + 7;
+    constexpr int k7kBase = 4;             // 前 4 項為數值欄位
+    constexpr int k4kBase = k7kBase + 7;   // 11
+    constexpr int kFields = k4kBase + 4;   // 15
     int selected = 0;
     int rebinding = -1;
+    // 欄位索引 → 對應 keybind 槽（nullptr 表非鍵位欄位）
+    auto keySlot = [&](int field) -> int* {
+        if (field >= k7kBase && field < k4kBase) return &settings.keys[field - k7kBase];
+        if (field >= k4kBase && field < kFields) return &settings.keys4[field - k4kBase];
+        return nullptr;
+    };
     auto next = Clock::now();
 
     while (true) {
@@ -388,7 +401,7 @@ void runSettings(Terminal& term, Settings& settings) {
                 if (e.code == 27) {
                     rebinding = -1;  // 取消
                 } else if (e.code >= 32 && e.code <= 126) {  // 僅接受可列印鍵
-                    settings.keys[rebinding] = toStoredKey(e.code);
+                    if (int* slot = keySlot(rebinding)) *slot = toStoredKey(e.code);
                     rebinding = -1;
                 }
                 continue;
@@ -408,8 +421,8 @@ void runSettings(Terminal& term, Settings& settings) {
                 settings.musicVolume = std::clamp(settings.musicVolume + dir * 0.05f, 0.0f, 1.0f);
             else if (selected == 3 && dir)
                 settings.effectVolume = std::clamp(settings.effectVolume + dir * 0.05f, 0.0f, 1.0f);
-            else if (selected >= kBase && (e.code == 13 || e.code == 32))
-                rebinding = selected - kBase;
+            else if (selected >= k7kBase && (e.code == 13 || e.code == 32))
+                rebinding = selected;
         }
 
         canvas.clear();
@@ -431,12 +444,20 @@ void runSettings(Terminal& term, Settings& settings) {
         std::snprintf(buf, sizeof(buf), "%d%%", (int)(settings.effectVolume * 100));
         row(3, "Effect volume", buf, y++);
         ++y;
-        canvas.putText(4, y++, "KEYBINDS", kGray);
+        canvas.putText(4, y++, "7K KEYBINDS", kGray);
         for (int i = 0; i < 7; ++i) {
             std::snprintf(buf, sizeof(buf), "Lane %d", i + 1);
             const std::string val =
-                (rebinding == i) ? "press a key..." : keyLabel(settings.keys[i]);
-            row(kBase + i, buf, val, y++);
+                (rebinding == k7kBase + i) ? "press a key..." : keyLabel(settings.keys[i]);
+            row(k7kBase + i, buf, val, y++);
+        }
+        ++y;
+        canvas.putText(4, y++, "4K KEYBINDS", kGray);
+        for (int i = 0; i < 4; ++i) {
+            std::snprintf(buf, sizeof(buf), "Lane %d", i + 1);
+            const std::string val =
+                (rebinding == k4kBase + i) ? "press a key..." : keyLabel(settings.keys4[i]);
+            row(k4kBase + i, buf, val, y++);
         }
         canvas.putText(4, term.rows() - 2,
                        "up/down field   left/right adjust   enter rebind   esc save", kGray);

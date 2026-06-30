@@ -11,8 +11,10 @@ struct Settings {
     float scrollSpeed = 1.0f;    // 下落速度倍率（越大越快）
     float musicVolume = 0.7f;    // 背景音樂音量 0..1
     float effectVolume = 0.7f;   // 擊打音效音量 0..1
-    // 7 軌鍵位（raylib keycode）；預設 S D F SPACE J K L
+    // 7K 鍵位（raylib keycode）；預設 S D F SPACE J K L
     std::array<int, 7> keys{83, 68, 70, 32, 74, 75, 76};
+    // 4K 鍵位；預設 D F J K
+    std::array<int, 4> keys4{68, 70, 74, 75};
 };
 
 Settings loadSettings(const std::filesystem::path& file);

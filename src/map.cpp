@@ -82,17 +82,15 @@ Beatmap loadBeatmap(const std::filesystem::path& filename) {
                 endTime = std::stoi(extra.substr(0, extra.find(':')));
             }
 
-            // 7K 鍵位範圍：x 值對應列，clamp 避免 x==512 算出 7 越界
-            const int column = std::clamp((x * 7) / 512, 0, 6);
+            // x 值依鍵數對應到音軌，clamp 避免邊界（x==512）越界
+            const int k = (keyCount > 0) ? keyCount : 7;
+            const int column = std::clamp((x * k) / 512, 0, k - 1);
 
             map.notes.push_back({column, time, endTime});
         }
     }
 
-    if (keyCount != 0 && keyCount != 7) {
-        std::cerr << "警告：這不是 7K 譜面 (CircleSize=" << keyCount << ")" << std::endl;
-    }
-
+    if (keyCount > 0) map.keyCount = keyCount;
     return map;
 }
 

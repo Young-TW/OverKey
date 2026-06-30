@@ -54,6 +54,13 @@ Settings loadSettings(const std::filesystem::path& file) {
                 while (i < 7 && std::getline(ss, tok, ',')) {
                     s.keys[i++] = std::stoi(trim(tok));
                 }
+            } else if (key == "keys4") {
+                std::stringstream ss(val);
+                std::string tok;
+                int i = 0;
+                while (i < 4 && std::getline(ss, tok, ',')) {
+                    s.keys4[i++] = std::stoi(trim(tok));
+                }
             }
         } catch (...) {
             // 忽略損壞的數值，保留預設
@@ -72,26 +79,40 @@ void saveSettings(const Settings& s, const std::filesystem::path& file) {
     out << "keys=";
     for (int i = 0; i < 7; ++i) out << (i ? "," : "") << s.keys[i];
     out << "\n";
+    out << "keys4=";
+    for (int i = 0; i < 4; ++i) out << (i ? "," : "") << s.keys4[i];
+    out << "\n";
 }
+
+// 欄位配置：0-3 數值，4-10 為 7K 鍵位，11-14 為 4K 鍵位
+namespace {
+constexpr int kNumericFields = 4;
+constexpr int k7kBase = kNumericFields;       // 4
+constexpr int k4kBase = kNumericFields + 7;   // 11
+constexpr int kTotalFields = kNumericFields + 7 + 4;  // 15
+
+int* keyForField(Settings& s, int field) {
+    if (field >= k7kBase && field < k4kBase) return &s.keys[field - k7kBase];
+    if (field >= k4kBase && field < kTotalFields) return &s.keys4[field - k4kBase];
+    return nullptr;
+}
+}  // namespace
 
 void SettingsScreen::run(Viewport& vp) {
     while (!WindowShouldClose()) {
-        constexpr int kKeybindBase = 4;       // 前 4 項為數值欄位
-        constexpr int kFields = kKeybindBase + 7;
-
         if (rebinding_ >= 0) {
             // 等待玩家按任意鍵作為新綁定
             const int k = GetKeyPressed();
             if (k == KEY_ESCAPE) {
                 rebinding_ = -1;
             } else if (k != 0) {
-                s_.keys[rebinding_] = k;
+                if (int* slot = keyForField(s_, rebinding_)) *slot = k;
                 rebinding_ = -1;
             }
         } else {
             if (IsKeyPressed(KEY_F11)) ToggleBorderlessWindowed();
-            if (IsKeyPressed(KEY_DOWN)) selected_ = (selected_ + 1) % kFields;
-            if (IsKeyPressed(KEY_UP)) selected_ = (selected_ + kFields - 1) % kFields;
+            if (IsKeyPressed(KEY_DOWN)) selected_ = (selected_ + 1) % kTotalFields;
+            if (IsKeyPressed(KEY_UP)) selected_ = (selected_ + kTotalFields - 1) % kTotalFields;
 
             const int dir = IsKeyPressed(KEY_RIGHT) ? 1 : (IsKeyPressed(KEY_LEFT) ? -1 : 0);
             if (selected_ == 0 && dir != 0) {
@@ -102,9 +123,9 @@ void SettingsScreen::run(Viewport& vp) {
                 s_.musicVolume = std::clamp(s_.musicVolume + dir * 0.05f, 0.0f, 1.0f);
             } else if (selected_ == 3 && dir != 0) {
                 s_.effectVolume = std::clamp(s_.effectVolume + dir * 0.05f, 0.0f, 1.0f);
-            } else if (selected_ >= kKeybindBase &&
+            } else if (selected_ >= kNumericFields &&
                        (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER))) {
-                rebinding_ = selected_ - kKeybindBase;  // 進入重新綁定
+                rebinding_ = selected_;  // 進入重新綁定
             }
 
             if (IsKeyPressed(KEY_ESCAPE)) return;
@@ -118,40 +139,49 @@ void SettingsScreen::run(Viewport& vp) {
 
 void SettingsScreen::draw() const {
     const int w = kVirtualW;
-    constexpr int kKeybindBase = 4;
-    DrawText("SETTINGS", 40, 50, 48, RAYWHITE);
+    DrawText("SETTINGS", 40, 40, 44, RAYWHITE);
 
     auto drawRow = [&](int idx, const char* label, const std::string& value, int y) {
         const bool sel = (idx == selected_);
-        if (sel) DrawRectangle(30, y - 6, w - 60, 44, Color{70, 55, 80, 255});
-        DrawText(label, 56, y, 26, sel ? RAYWHITE : Fade(RAYWHITE, 0.7f));
+        if (sel) DrawRectangle(30, y - 5, w - 60, 38, Color{70, 55, 80, 255});
+        DrawText(label, 56, y, 24, sel ? RAYWHITE : Fade(RAYWHITE, 0.7f));
         const char* v = value.c_str();
-        const bool waiting = (rebinding_ == idx - kKeybindBase);
-        DrawText(v, w - 56 - MeasureText(v, 26), y, 26,
+        const bool waiting = (rebinding_ == idx);
+        DrawText(v, w - 56 - MeasureText(v, 24), y, 24,
                  waiting ? GOLD : (sel ? GOLD : Fade(RAYWHITE, 0.8f)));
     };
 
-    int y = 120;
+    int y = 104;
     drawRow(0, "Audio offset", TextFormat("%+d ms", s_.audioOffsetMs), y);
-    y += 48;
+    y += 42;
     drawRow(1, "Scroll speed", TextFormat("%.1fx", s_.scrollSpeed), y);
-    y += 48;
+    y += 42;
     drawRow(2, "Music volume", TextFormat("%d%%", static_cast<int>(s_.musicVolume * 100)), y);
-    y += 48;
+    y += 42;
     drawRow(3, "Effect volume", TextFormat("%d%%", static_cast<int>(s_.effectVolume * 100)),
             y);
-    y += 60;
+    y += 50;
 
-    DrawText("KEYBINDS", 56, y, 22, Fade(RAYWHITE, 0.55f));
-    y += 34;
+    DrawText("7K KEYBINDS", 56, y, 20, Fade(RAYWHITE, 0.55f));
+    y += 30;
     for (int i = 0; i < 7; ++i) {
-        const std::string val = (rebinding_ == i) ? "press a key..." : keyName(s_.keys[i]);
-        drawRow(kKeybindBase + i, TextFormat("Lane %d", i + 1), val, y);
-        y += 44;
+        const std::string val =
+            (rebinding_ == k7kBase + i) ? "press a key..." : keyName(s_.keys[i]);
+        drawRow(k7kBase + i, TextFormat("Lane %d", i + 1), val, y);
+        y += 34;
+    }
+    y += 16;
+    DrawText("4K KEYBINDS", 56, y, 20, Fade(RAYWHITE, 0.55f));
+    y += 30;
+    for (int i = 0; i < 4; ++i) {
+        const std::string val =
+            (rebinding_ == k4kBase + i) ? "press a key..." : keyName(s_.keys4[i]);
+        drawRow(k4kBase + i, TextFormat("Lane %d", i + 1), val, y);
+        y += 34;
     }
 
     const char* hint =
         "UP/DOWN field   LEFT/RIGHT adjust   ENTER rebind key   ESC save & back";
-    DrawText(hint, w / 2 - MeasureText(hint, 20) / 2, kVirtualH - 50, 20,
+    DrawText(hint, w / 2 - MeasureText(hint, 20) / 2, kVirtualH - 44, 20,
              Fade(RAYWHITE, 0.6f));
 }

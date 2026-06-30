@@ -30,7 +30,7 @@ SongSelect::SongSelect(std::filesystem::path mapsDir) : mapsDir_(std::move(mapsD
                  mapsDir_, std::filesystem::directory_options::skip_permission_denied, ec);
              !ec && it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
             const auto& p = it->path();
-            if (p.extension() == ".osu" && probeBeatmap(p).isMania7K()) {
+            if (p.extension() == ".osu" && probeBeatmap(p).isSupported()) {
                 std::filesystem::path rel = p.lexically_relative(mapsDir_);
                 std::string label = rel.replace_extension("").string();
                 entries_.push_back({p, std::move(label)});
@@ -91,7 +91,7 @@ void SongSelect::draw() const {
     DrawText("SELECT SONG", 42, 115, 24, GRAY);
 
     if (entries_.empty()) {
-        const char* msg = "找不到 mania 7K 譜面（請確認 maps 目錄路徑）";
+        const char* msg = "找不到 mania 4K/7K 譜面（請確認 maps 目錄路徑）";
         DrawText(msg, w / 2 - MeasureText(msg, 28) / 2, kVirtualH / 2 - 14, 28, RED);
         const char* hint = "Press ESC to exit";
         DrawText(hint, w / 2 - MeasureText(hint, 22) / 2, kVirtualH - 60, 22,
@@ -137,16 +137,13 @@ void SongSelect::draw() const {
 
         y += 8;
         const int sec = bi.lengthMs / 1000;
+        const bool supported = (bi.keyCount == 4 || bi.keyCount == 7);
         DrawText(TextFormat("Keys     %dK", bi.keyCount), kPanelX, y, 22,
-                 bi.keyCount == 7 ? GREEN : ORANGE);
+                 supported ? GREEN : ORANGE);
         y += 30;
         DrawText(TextFormat("Notes    %d", bi.noteCount), kPanelX, y, 22, RAYWHITE);
         y += 30;
         DrawText(TextFormat("Length   %d:%02d", sec / 60, sec % 60), kPanelX, y, 22, RAYWHITE);
-        y += 30;
-        if (bi.keyCount != 7) {
-            DrawText("(非 7K，可能無法正常遊玩)", kPanelX, y + 10, 18, ORANGE);
-        }
     }
 
     const char* hint =

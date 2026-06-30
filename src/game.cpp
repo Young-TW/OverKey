@@ -101,8 +101,33 @@ void Game::run(Viewport& vp) {
     bool musicStarted = false;
     double songTimeMs = -kLeadInMs;
 
+    // 重置為新一輪嘗試（快速重試用）
+    auto restart = [&] {
+        if (musicStarted) StopMusicStream(music.get());
+        session_ = PlaySession(map_.notes);
+        phase_ = Phase::Playing;
+        laneFlash_.fill(-10.0);
+        clock = SongClock{kLeadInMs};
+        musicStarted = false;
+        songTimeMs = -kLeadInMs;
+    };
+
     while (!WindowShouldClose()) {
         if (IsKeyPressed(KEY_F11)) ToggleBorderlessWindowed();
+        if (IsKeyPressed(KEY_GRAVE)) {  // ` / ~ 快速重試
+            restart();
+            continue;
+        }
+        {  // 下落速度：3 變慢 / 4 變快（F3/F4 同義）
+            const bool slower = IsKeyPressed(KEY_THREE) || IsKeyPressed(KEY_F3);
+            const bool faster = IsKeyPressed(KEY_FOUR) || IsKeyPressed(KEY_F4);
+            if (slower || faster) {
+                settings_.scrollSpeed =
+                    std::clamp(settings_.scrollSpeed + (faster ? 0.1f : -0.1f), 0.5f, 4.0f);
+                approachMs_ = kBaseApproachMs / settings_.scrollSpeed;
+                pxPerMs_ = kJudgeY / approachMs_;
+            }
+        }
 
         if (phase_ == Phase::Playing) {
             if (IsKeyPressed(KEY_ESCAPE)) {  // 中途放棄，回選單
@@ -234,6 +259,9 @@ void Game::drawPlayfield(double songTimeMs) const {
              session_.combo() > 0 ? GOLD : GRAY);
     DrawText(TextFormat("MAX    %d", session_.maxCombo()), 20, 100, 20, GRAY);
     DrawText(TextFormat("ACC    %.2f%%", session_.accuracy()), 20, 130, 20, RAYWHITE);
+    // 下落速度：頂部到底部的毫秒（F3/F4 調整）
+    DrawText(TextFormat("SPEED  %.1fx  %.0fms", settings_.scrollSpeed, kScreenH / pxPerMs_), 20,
+             155, 18, Fade(RAYWHITE, 0.7f));
 
     const Judgment tiers[] = {Judgment::Perfect, Judgment::Great, Judgment::Good,
                               Judgment::Bad, Judgment::Miss};

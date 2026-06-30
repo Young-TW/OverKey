@@ -13,11 +13,13 @@ struct Rgb {
     uint8_t r, g, b;
 };
 
-// 方向鍵以負值表示，避免與 unicode keycode 衝突
+// 方向鍵 / 功能鍵以負值表示，避免與 unicode keycode 衝突
 inline constexpr int kKeyUp = -1;
 inline constexpr int kKeyDown = -2;
 inline constexpr int kKeyRight = -3;
 inline constexpr int kKeyLeft = -4;
+inline constexpr int kKeyF3 = -13;
+inline constexpr int kKeyF4 = -14;
 
 // 一次鍵盤事件（透過 Kitty keyboard protocol 取得）
 struct KeyEvent {

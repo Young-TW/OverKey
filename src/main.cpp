@@ -46,6 +46,10 @@ int main(int argc, char* argv[]) {
         std::filesystem::path audioPath = choice.path.parent_path() / map.audioFilename;
         Game game{std::move(map), std::move(audioPath), settings};
         game.run(viewport);  // 結束或中途放棄後回到選單
+        if (game.scrollSpeed() != settings.scrollSpeed) {  // F3/F4 調過則存回
+            settings.scrollSpeed = game.scrollSpeed();
+            saveSettings(settings, kConfigFile);
+        }
     }
 
     return 0;

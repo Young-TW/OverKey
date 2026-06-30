@@ -20,6 +20,8 @@
 namespace fs = std::filesystem;
 using tui::KeyEvent;
 using tui::kKeyDown;
+using tui::kKeyF3;
+using tui::kKeyF4;
 using tui::kKeyLeft;
 using tui::kKeyRight;
 using tui::kKeyUp;
@@ -227,7 +229,7 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
 }
 
 // 遊玩 + 結算；ESC/q 中途回選單
-void playSong(Terminal& term, const Entry& entry, const Settings& settings, Sound hit) {
+void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit) {
     Beatmap map = loadBeatmap(entry.path);
     if (map.notes.empty()) return;
 
@@ -235,7 +237,7 @@ void playSong(Terminal& term, const Entry& entry, const Settings& settings, Soun
     const int keyCount = (map.keyCount == 4) ? 4 : 7;
     const int* laneKeys = (keyCount == 4) ? settings.keys4.data() : settings.keys.data();
     const double offset = settings.audioOffsetMs;
-    const double approach = kBaseApproachMs / settings.scrollSpeed;
+    double approach = kBaseApproachMs / settings.scrollSpeed;
 
     const fs::path audioPath = entry.path.parent_path() / map.audioFilename;
     MusicRes music{audioPath.string().c_str()};
@@ -275,6 +277,23 @@ void playSong(Terminal& term, const Entry& entry, const Settings& settings, Soun
             if (e.type == KeyEvent::Press && (e.code == 27 || e.code == 'q' || e.code == 3)) {
                 if (musicStarted) StopMusicStream(music.get());
                 return;  // 回選單
+            }
+            if (e.type == KeyEvent::Press && (e.code == '`' || e.code == '~')) {  // 快速重試
+                if (musicStarted) StopMusicStream(music.get());
+                session = PlaySession(map.notes);
+                clock = SongClock{kLeadInMs};
+                musicStarted = false;
+                songTimeMs = -kLeadInMs;
+                playing = true;
+                continue;
+            }
+            if (e.type == KeyEvent::Press &&
+                (e.code == '3' || e.code == '4' || e.code == kKeyF3 || e.code == kKeyF4)) {
+                const bool faster = (e.code == '4' || e.code == kKeyF4);  // 3 慢 / 4 快
+                settings.scrollSpeed =
+                    std::clamp(settings.scrollSpeed + (faster ? 0.1f : -0.1f), 0.5f, 4.0f);
+                approach = kBaseApproachMs / settings.scrollSpeed;
+                continue;
             }
             if (playing) {
                 const int lane = laneOf(e.code, laneKeys, keyCount);
@@ -350,6 +369,9 @@ void playSong(Terminal& term, const Entry& entry, const Settings& settings, Soun
             canvas.putText(1, 1, buf, session.combo() > 0 ? kGold : kGray);
             std::snprintf(buf, sizeof(buf), "ACC %.2f%%", session.accuracy());
             canvas.putText(1, 2, buf, kWhite);
+            std::snprintf(buf, sizeof(buf), "SPEED %.1fx %.0fms", settings.scrollSpeed,
+                          (term.rows() * 8) / pxPerMs);
+            canvas.putText(1, 3, buf, kGray);
             if (session.lastJudgment() != Judgment::None) {
                 const char* jt = judgeName(session.lastJudgment());
                 canvas.putText(originCol + playCells / 2 - (int)std::string(jt).size() / 2,
@@ -540,7 +562,10 @@ int main(int argc, char* argv[]) {
                 SetSoundVolume(hit, settings.effectVolume);  // 套用新音效音量
                 continue;
             }
+            const float prevSpeed = settings.scrollSpeed;
             playSong(term, entries[choice], settings, hit);
+            if (settings.scrollSpeed != prevSpeed)  // F3/F4 調過則存回
+                saveSettings(settings, kConfigFile);
         }
     }  // 還原終端機
 

@@ -88,8 +88,16 @@ std::vector<KeyEvent> Terminal::poll() {
             ++i;
             continue;
         }
-        // ESC：可能是 CSI 序列或孤立 Esc
+        // ESC：可能是 CSI 序列、SS3（功能鍵）或孤立 Esc
         if (i + 1 >= buf_.size()) break;  // 不完整，保留尾段
+        if (buf_[i + 1] == 'O') {  // SS3：\eOP..\eOS = F1..F4
+            if (i + 2 >= buf_.size()) break;
+            const char f = buf_[i + 2];
+            if (f == 'R') events.push_back({kKeyF3, KeyEvent::Press});
+            else if (f == 'S') events.push_back({kKeyF4, KeyEvent::Press});
+            i += 3;
+            continue;
+        }
         if (buf_[i + 1] != '[') {
             events.push_back({27, KeyEvent::Press});  // 孤立 Esc
             ++i;
@@ -118,8 +126,10 @@ std::vector<KeyEvent> Terminal::poll() {
                 const size_t semi = body.find(';');
                 std::string keyfield = (semi == std::string::npos) ? body : body.substr(0, semi);
                 const size_t kc = keyfield.find(':');
-                const int code = std::stoi(keyfield.substr(0, kc));
-                int ev = (semi == std::string::npos) ? 1 : eventType(body);
+                int code = std::stoi(keyfield.substr(0, kc));
+                if (code == 57366) code = kKeyF3;  // Kitty 功能鍵 PUA → 合成碼
+                else if (code == 57367) code = kKeyF4;
+                const int ev = (semi == std::string::npos) ? 1 : eventType(body);
                 events.push_back({code, static_cast<KeyEvent::Type>(ev)});
             } catch (...) {
             }
@@ -130,6 +140,16 @@ std::vector<KeyEvent> Terminal::poll() {
                              : (final == 'C') ? kKeyRight
                                               : kKeyLeft;
             events.push_back({code, static_cast<KeyEvent::Type>(eventType(body))});
+        } else if (final == '~') {
+            // CSI tilde 功能鍵：13~=F3、14~=F4（前導數字）
+            int num = 0;
+            try {
+                num = std::stoi(body.substr(0, body.find_first_of(";:")));
+            } catch (...) {
+            }
+            if (num == 13) events.push_back({kKeyF3, static_cast<KeyEvent::Type>(eventType(body))});
+            else if (num == 14)
+                events.push_back({kKeyF4, static_cast<KeyEvent::Type>(eventType(body))});
         }
         i = j + 1;
     }

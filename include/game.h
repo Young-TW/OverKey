@@ -16,6 +16,9 @@ public:
     Game(Beatmap map, std::filesystem::path audioPath, Settings settings);
     void run(Viewport& vp);
 
+    // 遊玩中以 F3/F4 調整後的下落速度，供呼叫端存回設定
+    float scrollSpeed() const { return settings_.scrollSpeed; }
+
 private:
     enum class Phase { Playing, Result };
 

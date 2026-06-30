@@ -1,0 +1,114 @@
+# OverKey
+
+A falling-rhythm game (osu!mania-style) in C++23, with **two frontends sharing one
+logic core**: a graphical version (raylib) and a terminal version (TUI). Supports
+**4K and 7K** mania beatmaps in the `.osu` format.
+
+```
+選歌（自動篩 4K/7K，hover 試聽副歌）→ 倒數 → 下落遊玩（長押、可調速、聲光）
+→ 暫停選單 → 結算（評級、誤差直方圖、offset 建議）→ 回選單
+```
+
+## Features
+
+- **Two frontends, one core**: judgment, scoring, timing live in a raylib-free core
+  (`PlaySession` + `SongClock`); the GUI and TUI are thin shells over it.
+- **4K & 7K** mania support (column mapping driven by the beatmap's key count).
+- **5-tier judgment**: Perfect / Great / Good / Bad / Miss, with combo and accuracy.
+- **Long notes** with press/hold/release judging.
+- **Smooth, constant-velocity scroll clock** (frame-delta driven, audio used only as a
+  drift anchor — no judder from the quantized audio position).
+- **Song select** with metadata panel and **chorus preview** on hover (osu `PreviewTime`).
+- **Settings** (persisted to `overkey.cfg`, shared by both frontends): audio offset,
+  scroll speed, music/effect volume, per-lane keybinds for 4K and 7K.
+- **Result screen**: grade, accuracy, per-tier counts, timing-error histogram, and a
+  suggested offset for calibration.
+- **Pause menu** (Resume / Retry / Quit), **quick retry**, **live speed adjust**.
+- GUI: borderless fullscreen via a virtual-resolution render target (letterboxed).
+- TUI: solid eighth-block rendering (rows×8 vertical resolution), Kitty keyboard
+  protocol for key-release (needed for long notes), synchronized output for smoothness.
+
+## Build
+
+Requires CMake ≥ 3.20 and a C++23 compiler. raylib is fetched automatically via
+`FetchContent` (no system install needed).
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+```
+
+Produces two executables in `build/`:
+
+- `OverKey` — graphical (raylib) frontend
+- `overkey-tui` — terminal frontend
+
+## Run
+
+```bash
+./build/OverKey            # scans ./maps
+./build/OverKey /path/to/maps
+./build/overkey-tui        # terminal version (needs kitty/ghostty — see below)
+```
+
+### Maps
+
+Point the game at a folder of osu!mania `.osu` files (4K or 7K); non-mania and other
+key counts are filtered out automatically. `.osz` files are zip archives — extract one
+into a folder and point the game at it:
+
+```bash
+unzip "Some Song.osz" -d maps/SomeSong
+```
+
+> osu! **lazer** stores beatmaps in a hashed content store (no `.osu` files), so it is
+> not directly readable — export an `.osz` from lazer and extract it.
+
+### Controls
+
+| | GUI | TUI |
+|---|---|---|
+| Lanes (7K default) | `S D F Space J K L` | same |
+| Lanes (4K default) | `D F J K` | same |
+| Pause | `Esc` | `Esc` |
+| Quick retry | `` ` `` / `~` | `` ` `` / `~` |
+| Scroll speed | `3` slower / `4` faster (also F3/F4) | `3` / `4` |
+| Settings (from menu) | `Tab` | `Tab` |
+| Fullscreen toggle (GUI) | `F11` | — |
+| Menu navigate | `↑ ↓`, Enter, Esc | `↑↓` or `j k`, Enter, `q` |
+
+The **TUI requires a terminal that supports the Kitty keyboard protocol** (kitty,
+ghostty, …) — key-release events are needed to judge long notes. High-refresh terminals
+give the smoothest scrolling.
+
+### Calibration
+
+After a play, the result screen shows your mean timing error and a suggested audio
+offset. Set it under `Tab → Audio offset` so judgment lines up with the music.
+
+## Architecture
+
+```
+include/play.h, src/play.cpp     core: PlaySession, SongClock, Judgment (no raylib)
+include/map.h,  src/map.cpp       .osu parsing: loadBeatmap / loadBeatmapInfo / probeBeatmap
+include/settings.*                Settings struct + load/save + GUI settings screen
+include/game.h, src/game.cpp      GUI frontend over PlaySession
+src/song_select.cpp, src/main.cpp GUI menu + entry point
+include/tui.h, src/tui.cpp        terminal layer: raw mode, Kitty input, eighth-block canvas
+src/tui_main.cpp                  TUI frontend (menu, gameplay, settings, result)
+include/render.h                  GUI virtual-resolution viewport
+include/raii.h                    RAII wrappers for raylib window/audio/textures
+tests/test_core.cpp               unit tests for the raylib-free core
+```
+
+CMake builds an `overkey_core` static library shared by both executables.
+
+## Tests
+
+The logic core (map parsing, judgment, scoring, clock) is covered by headless unit
+tests:
+
+```bash
+cmake --build build -j
+ctest --test-dir build --output-on-failure
+```

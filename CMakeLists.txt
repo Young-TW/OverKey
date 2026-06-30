@@ -42,3 +42,9 @@ add_executable(overkey-tui
 target_link_libraries(overkey-tui PRIVATE overkey_core)
 
 install(TARGETS ${PROJECT_NAME} overkey-tui)
+
+# 測試：只編 raylib-free 的 core 原始碼，headless 可跑
+enable_testing()
+add_executable(test_core tests/test_core.cpp src/map.cpp src/play.cpp)
+target_include_directories(test_core PRIVATE ./include)
+add_test(NAME core COMMAND test_core)

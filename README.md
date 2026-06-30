@@ -1,5 +1,7 @@
 # OverKey
 
+[![CI](https://github.com/Young-TW/OverKey/actions/workflows/ci.yml/badge.svg)](https://github.com/Young-TW/OverKey/actions/workflows/ci.yml)
+
 A falling-rhythm game (osu!mania-style) in C++23, with **two frontends sharing one
 logic core**: a graphical version (raylib) and a terminal version (TUI). Supports
 **4K and 7K** mania beatmaps in the `.osu` format.

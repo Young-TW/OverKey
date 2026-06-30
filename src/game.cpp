@@ -68,7 +68,7 @@ Game::Game(Beatmap map, std::filesystem::path audioPath)
 }
 
 void Game::run() {
-    RaylibApp app{kScreenW, kScreenH, "OverKey"};
+    // 視窗與音訊裝置由外層（main）建立並持有；這裡只負責一局的邏輯。
     if (!map_.title.empty()) SetWindowTitle(("OverKey - " + map_.title).c_str());
 
     MusicRes music{audioPath_.string().c_str()};
@@ -80,6 +80,10 @@ void Game::run() {
 
     while (!WindowShouldClose()) {
         if (phase_ == Phase::Playing) {
+            if (IsKeyPressed(KEY_ESCAPE)) {  // 中途放棄，回選單
+                if (musicStarted) StopMusicStream(music.get());
+                return;
+            }
             // 時鐘：開場用牆鐘倒數到 0；音樂開始後改以音訊播放位置為準，避免飄移
             songTimeMs = (GetTime() - startWall) * 1000.0;
             if (haveMusic) {
@@ -99,8 +103,11 @@ void Game::run() {
                 phase_ = Phase::Result;
                 if (musicStarted) StopMusicStream(music.get());
             }
-        } else {  // Result
-            if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER)) break;
+        } else {  // Result：Enter/Esc 回選單
+            if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER) ||
+                IsKeyPressed(KEY_ESCAPE)) {
+                return;
+            }
         }
 
         BeginDrawing();

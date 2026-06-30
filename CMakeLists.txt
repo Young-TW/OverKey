@@ -17,10 +17,28 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(raylib)
 
-file(GLOB_RECURSE SRC_FILES ./src/*.cpp)
+# 前端無關的遊玩 core（GUI 與 TUI 共用）。settings.cpp 含 raylib 設定畫面，故連結 raylib。
+add_library(overkey_core STATIC
+    src/map.cpp
+    src/play.cpp
+    src/settings.cpp
+)
+target_include_directories(overkey_core PUBLIC ./include)
+target_link_libraries(overkey_core PUBLIC raylib)
 
-add_executable(${PROJECT_NAME} ${SRC_FILES})
-target_include_directories(${PROJECT_NAME} PRIVATE ./include)
-target_link_libraries(${PROJECT_NAME} PRIVATE raylib)
+# GUI 前端（raylib 視窗）
+add_executable(${PROJECT_NAME}
+    src/main.cpp
+    src/game.cpp
+    src/song_select.cpp
+)
+target_link_libraries(${PROJECT_NAME} PRIVATE overkey_core)
 
-install(TARGETS ${PROJECT_NAME})
+# TUI 前端（終端機；raylib 僅用於音訊，免視窗）
+add_executable(overkey-tui
+    src/tui_main.cpp
+    src/tui.cpp
+)
+target_link_libraries(overkey-tui PRIVATE overkey_core)
+
+install(TARGETS ${PROJECT_NAME} overkey-tui)

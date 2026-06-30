@@ -3,67 +3,99 @@
 #include <sstream>
 #include <vector>
 #include <string>
+#include <algorithm>
 #include <filesystem>
 
 #include "map.h"
 
-// 解析 osu!mania 7K 譜面的函式
-std::vector<ManiaNote> parse7K(const std::filesystem::path& filename) {
-    std::ifstream file(filename);
-    std::vector<ManiaNote> notes;
-    std::string line;
-    bool inHitObjects = false;
-    int keyCount = 0;
+namespace {
 
+// 去除字串前後空白與 \r（osu 檔常為 CRLF）
+std::string trim(const std::string& s) {
+    const auto begin = s.find_first_not_of(" \t\r\n");
+    if (begin == std::string::npos) return "";
+    const auto end = s.find_last_not_of(" \t\r\n");
+    return s.substr(begin, end - begin + 1);
+}
+
+// 取 "Key: Value" 形式的值
+std::string keyValue(const std::string& line) {
+    const auto pos = line.find(':');
+    if (pos == std::string::npos) return "";
+    return trim(line.substr(pos + 1));
+}
+
+}  // namespace
+
+// 解析整張 osu!mania 7K 譜面
+Beatmap loadBeatmap(const std::filesystem::path& filename) {
+    Beatmap map;
+    std::ifstream file(filename);
     if (!file.is_open()) {
         std::cerr << "無法打開檔案: " << filename << std::endl;
-        return notes;
+        return map;
     }
 
+    std::string line;
+    std::string section;  // 目前所在的 [Section]
+    int keyCount = 0;
+
     while (std::getline(file, line)) {
-        if (line.find("[HitObjects]") != std::string::npos) {
-            inHitObjects = true;
+        const std::string trimmed = trim(line);
+        if (trimmed.empty()) continue;
+
+        // 切換區段
+        if (trimmed.front() == '[' && trimmed.back() == ']') {
+            section = trimmed;
             continue;
         }
-        if (inHitObjects && line.empty()) break;
 
-        // 取得 Key Count (鍵數)
-        if (line.find("CircleSize:") != std::string::npos) {
-            keyCount = std::stoi(line.substr(line.find(":") + 1));
-            if (keyCount != 7) {
-                std::cerr << "這不是 7K 譜面！" << std::endl;
-                return {};
+        if (section == "[General]") {
+            if (trimmed.rfind("AudioFilename", 0) == 0) {
+                map.audioFilename = keyValue(trimmed);
             }
-        }
-
-        // 解析 HitObjects
-        if (inHitObjects) {
-            std::stringstream ss(line);
+        } else if (section == "[Metadata]") {
+            if (trimmed.rfind("Title:", 0) == 0) {
+                map.title = keyValue(trimmed);
+            }
+        } else if (section == "[Difficulty]") {
+            if (trimmed.rfind("CircleSize", 0) == 0) {
+                keyCount = std::stoi(keyValue(trimmed));
+            }
+        } else if (section == "[HitObjects]") {
+            std::stringstream ss(trimmed);
             std::string token;
             std::vector<std::string> tokens;
-
             while (std::getline(ss, token, ',')) {
                 tokens.push_back(token);
             }
-
             if (tokens.size() < 5) continue;  // 確保資料完整
 
-            int x = std::stoi(tokens[0]);
-            int time = std::stoi(tokens[2]);
-            int type = std::stoi(tokens[3]);
-            int endTime = -1; // 預設為普通 Note
+            const int x = std::stoi(tokens[0]);
+            const int time = std::stoi(tokens[2]);
+            const int type = std::stoi(tokens[3]);
+            int endTime = -1;  // 預設為普通 Note
 
-            // 判斷是否為長押
-            if (type & 128 && tokens.size() > 5) {
-                endTime = std::stoi(tokens[5]);
+            // type 第 7 bit (128) 代表 mania 長押；長押的結束時間在 tokens[5] 的 ':' 前
+            if ((type & 128) && tokens.size() > 5) {
+                const std::string& extra = tokens[5];
+                endTime = std::stoi(extra.substr(0, extra.find(':')));
             }
 
-            // 7K 鍵位範圍：x 值對應列
-            int column = (x * 7) / 512;
+            // 7K 鍵位範圍：x 值對應列，clamp 避免 x==512 算出 7 越界
+            const int column = std::clamp((x * 7) / 512, 0, 6);
 
-            notes.push_back({column, time, endTime});
+            map.notes.push_back({column, time, endTime});
         }
     }
 
-    return notes;
+    if (keyCount != 0 && keyCount != 7) {
+        std::cerr << "警告：這不是 7K 譜面 (CircleSize=" << keyCount << ")" << std::endl;
+    }
+
+    return map;
+}
+
+std::vector<ManiaNote> parse7K(const std::filesystem::path& filename) {
+    return loadBeatmap(filename).notes;
 }

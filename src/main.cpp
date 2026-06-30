@@ -1,17 +1,25 @@
 #include <print>
-#include <iostream>
 
+#include "game.h"
 #include "map.h"
 
 int main(int argc, char* argv[]) {
-    std::filesystem::path osuFile = "maps/KRUX - Illusion of Inflict/7K Hyper.osu";  // 請替換為你的 osu!mania 7K 譜面檔案
-    auto notes = parse7K(osuFile);
+    // 第一個引數為譜面路徑；未提供則用預設範例
+    std::filesystem::path osuFile =
+        (argc > 1) ? argv[1] : "maps/KRUX - Illusion of Inflict/7K Hyper.osu";
 
-    for (const auto& note : notes) {
-        std::cout << "Column: " << note.column
-                  << ", Start Time: " << note.startTime
-                  << ", End Time: " << (note.endTime == -1 ? "N/A" : std::to_string(note.endTime))
-                  << std::endl;
+    Beatmap map = loadBeatmap(osuFile);
+    std::println("譜面: {} | 音符數: {}", map.title, map.notes.size());
+
+    if (map.notes.empty()) {
+        std::println("沒有讀到任何音符，請確認檔案: {}", osuFile.string());
+        return 1;
     }
+
+    // 音訊檔相對於 .osu 所在目錄
+    std::filesystem::path audioPath = osuFile.parent_path() / map.audioFilename;
+
+    Game game{std::move(map), std::move(audioPath)};
+    game.run();
     return 0;
 }

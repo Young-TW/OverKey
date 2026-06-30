@@ -2,8 +2,11 @@
 #define SONG_SELECT_H
 
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <vector>
+
+#include "map.h"
 
 // 選單一次互動的結果
 enum class MenuAction { Play, Settings, Quit };
@@ -24,10 +27,12 @@ private:
     struct Entry {
         std::filesystem::path path;
         std::string label;
+        std::optional<BeatmapInfo> info;  // 延遲載入並快取
     };
 
     void draw() const;
     void clampScroll();
+    void ensureSelectedInfo();  // 確保目前選取項的摘要已載入
 
     std::filesystem::path mapsDir_;
     std::vector<Entry> entries_;

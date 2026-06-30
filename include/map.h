@@ -17,8 +17,21 @@ struct Beatmap {
     std::vector<ManiaNote> notes;
 };
 
+// 譜面摘要，供選單顯示（不載入完整音符序列）
+struct BeatmapInfo {
+    std::string title;
+    std::string artist;
+    std::string version;  // 難度名
+    int keyCount = 0;
+    int noteCount = 0;
+    int lengthMs = 0;  // 最後一個音符時間
+};
+
 // 讀取整張 osu!mania 7K 譜面（音訊檔名、標題、音符）
 Beatmap loadBeatmap(const std::filesystem::path& filename);
+
+// 輕量解析：只取摘要欄位並統計音符數/長度，不建立音符向量
+BeatmapInfo loadBeatmapInfo(const std::filesystem::path& filename);
 
 // 僅取得音符序列（沿用舊介面，內部呼叫 loadBeatmap）
 std::vector<ManiaNote> parse7K(const std::filesystem::path& filename);

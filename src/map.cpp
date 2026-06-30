@@ -99,3 +99,47 @@ Beatmap loadBeatmap(const std::filesystem::path& filename) {
 std::vector<ManiaNote> parse7K(const std::filesystem::path& filename) {
     return loadBeatmap(filename).notes;
 }
+
+BeatmapInfo loadBeatmapInfo(const std::filesystem::path& filename) {
+    BeatmapInfo info;
+    std::ifstream file(filename);
+    if (!file.is_open()) return info;
+
+    std::string line;
+    std::string section;
+    while (std::getline(file, line)) {
+        const std::string trimmed = trim(line);
+        if (trimmed.empty()) continue;
+        if (trimmed.front() == '[' && trimmed.back() == ']') {
+            section = trimmed;
+            continue;
+        }
+
+        if (section == "[Metadata]") {
+            if (trimmed.rfind("Title:", 0) == 0) info.title = keyValue(trimmed);
+            else if (trimmed.rfind("Artist:", 0) == 0) info.artist = keyValue(trimmed);
+            else if (trimmed.rfind("Version:", 0) == 0) info.version = keyValue(trimmed);
+        } else if (section == "[Difficulty]") {
+            if (trimmed.rfind("CircleSize", 0) == 0) {
+                try {
+                    info.keyCount = std::stoi(keyValue(trimmed));
+                } catch (...) {
+                }
+            }
+        } else if (section == "[HitObjects]") {
+            // 只取時間欄位，統計數量與最後時間，不解析完整物件
+            const auto t1 = trimmed.find(',');
+            if (t1 == std::string::npos) continue;
+            const auto t2 = trimmed.find(',', t1 + 1);
+            const auto t3 = trimmed.find(',', t2 + 1);
+            if (t2 == std::string::npos || t3 == std::string::npos) continue;
+            try {
+                const int time = std::stoi(trimmed.substr(t2 + 1, t3 - t2 - 1));
+                info.lengthMs = std::max(info.lengthMs, time);
+                ++info.noteCount;
+            } catch (...) {
+            }
+        }
+    }
+    return info;
+}

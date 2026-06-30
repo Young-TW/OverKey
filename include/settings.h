@@ -1,11 +1,14 @@
 #ifndef SETTINGS_H
 #define SETTINGS_H
 
+#include <array>
 #include <filesystem>
 
 struct Settings {
     int audioOffsetMs = 0;     // 加到歌曲時鐘的偏移（正值＝視判定整體延後）
     float scrollSpeed = 1.0f;  // 下落速度倍率（越大越快）
+    // 7 軌鍵位（raylib keycode）；預設 S D F SPACE J K L
+    std::array<int, 7> keys{83, 68, 70, 32, 74, 75, 76};
 };
 
 Settings loadSettings(const std::filesystem::path& file);
@@ -22,6 +25,7 @@ private:
 
     Settings& s_;
     int selected_ = 0;
+    int rebinding_ = -1;  // 正在等待輸入新鍵的軌道索引，-1 = 無
 };
 
 #endif

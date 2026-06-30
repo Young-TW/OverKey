@@ -8,6 +8,8 @@
 
 #include "map.h"
 
+class Viewport;
+
 // 選單一次互動的結果
 enum class MenuAction { Play, Settings, Quit };
 struct MenuResult {
@@ -21,7 +23,7 @@ public:
     explicit SongSelect(std::filesystem::path mapsDir);
 
     // 跑選單迴圈：Enter→Play、Tab→Settings、Esc/關窗→Quit。
-    MenuResult run();
+    MenuResult run(Viewport& vp);
 
 private:
     struct Entry {

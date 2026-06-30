@@ -4,6 +4,7 @@
 
 #include <raylib.h>
 
+#include "render.h"
 #include "song_select.h"
 
 namespace {
@@ -12,6 +13,14 @@ constexpr int kListTop = 170;
 constexpr int kListBottom = 80;  // 底部保留給提示
 constexpr int kListW = 520;      // 左側清單寬度，右側為詳情面板
 constexpr int kPanelX = kListW + 40;
+
+// 文字超過 maxW 像素時尾端以省略號截斷
+std::string ellipsize(const std::string& s, int fontSize, int maxW) {
+    if (MeasureText(s.c_str(), fontSize) <= maxW) return s;
+    std::string t = s;
+    while (!t.empty() && MeasureText((t + "...").c_str(), fontSize) > maxW) t.pop_back();
+    return t + "...";
+}
 }  // namespace
 
 SongSelect::SongSelect(std::filesystem::path mapsDir) : mapsDir_(std::move(mapsDir)) {
@@ -35,16 +44,17 @@ SongSelect::SongSelect(std::filesystem::path mapsDir) : mapsDir_(std::move(mapsD
 void SongSelect::clampScroll() {
     if (entries_.empty()) return;
     selected_ = std::clamp(selected_, 0, static_cast<int>(entries_.size()) - 1);
-    const int visible = (GetScreenHeight() - kListTop - kListBottom) / kRowH;
+    const int visible = (kVirtualH - kListTop - kListBottom) / kRowH;
     if (selected_ < scroll_) scroll_ = selected_;
     if (selected_ >= scroll_ + visible) scroll_ = selected_ - visible + 1;
     scroll_ = std::max(0, scroll_);
 }
 
-MenuResult SongSelect::run() {
+MenuResult SongSelect::run(Viewport& vp) {
     SetWindowTitle("OverKey - Select Song");
 
     while (!WindowShouldClose()) {
+        if (IsKeyPressed(KEY_F11)) ToggleBorderlessWindowed();
         if (!entries_.empty()) {
             if (IsKeyPressed(KEY_DOWN)) ++selected_;
             if (IsKeyPressed(KEY_UP)) --selected_;
@@ -61,10 +71,9 @@ MenuResult SongSelect::run() {
         if (IsKeyPressed(KEY_TAB)) return {MenuAction::Settings, {}};
         if (IsKeyPressed(KEY_ESCAPE)) return {MenuAction::Quit, {}};
 
-        BeginDrawing();
-        ClearBackground(Color{18, 18, 24, 255});
+        vp.begin(Color{18, 18, 24, 255});
         draw();
-        EndDrawing();
+        vp.end();
     }
     return {MenuAction::Quit, {}};  // 視窗關閉
 }
@@ -76,22 +85,22 @@ void SongSelect::ensureSelectedInfo() {
 }
 
 void SongSelect::draw() const {
-    const int w = GetScreenWidth();
+    const int w = kVirtualW;
 
     DrawText("OVERKEY", 40, 50, 56, RAYWHITE);
     DrawText("SELECT SONG", 42, 115, 24, GRAY);
 
     if (entries_.empty()) {
         const char* msg = "找不到 mania 7K 譜面（請確認 maps 目錄路徑）";
-        DrawText(msg, w / 2 - MeasureText(msg, 28) / 2, GetScreenHeight() / 2 - 14, 28, RED);
+        DrawText(msg, w / 2 - MeasureText(msg, 28) / 2, kVirtualH / 2 - 14, 28, RED);
         const char* hint = "Press ESC to exit";
-        DrawText(hint, w / 2 - MeasureText(hint, 22) / 2, GetScreenHeight() - 60, 22,
+        DrawText(hint, w / 2 - MeasureText(hint, 22) / 2, kVirtualH - 60, 22,
                  Fade(RAYWHITE, 0.6f));
         return;
     }
 
     // 左側清單
-    const int visible = (GetScreenHeight() - kListTop - kListBottom) / kRowH;
+    const int visible = (kVirtualH - kListTop - kListBottom) / kRowH;
     const int end = std::min(static_cast<int>(entries_.size()), scroll_ + visible);
     for (int i = scroll_; i < end; ++i) {
         const int y = kListTop + (i - scroll_) * kRowH;
@@ -100,24 +109,26 @@ void SongSelect::draw() const {
             DrawRectangle(20, y - 4, kListW - 20, kRowH - 6, Color{70, 55, 80, 255});
             DrawRectangle(20, y - 4, 6, kRowH - 6, GOLD);
         }
-        DrawText(entries_[i].label.c_str(), 44, y, 24, sel ? RAYWHITE : Fade(RAYWHITE, 0.7f));
+        const std::string text = ellipsize(entries_[i].label, 24, kListW - 60);
+        DrawText(text.c_str(), 44, y, 24, sel ? RAYWHITE : Fade(RAYWHITE, 0.7f));
     }
 
     DrawText(TextFormat("%d / %d", selected_ + 1, static_cast<int>(entries_.size())),
              40, 145, 20, GRAY);
 
     // 右側詳情面板
-    DrawLine(kListW + 20, kListTop - 10, kListW + 20, GetScreenHeight() - kListBottom,
+    DrawLine(kListW + 20, kListTop - 10, kListW + 20, kVirtualH - kListBottom,
              Color{40, 40, 50, 255});
     const Entry& e = entries_[selected_];
     if (e.info) {
         const BeatmapInfo& bi = *e.info;
         int y = kListTop;
+        const int panelW = kVirtualW - kPanelX - 30;
         auto field = [&](const char* label, const std::string& value, int size, Color c) {
             if (value.empty()) return;
             DrawText(label, kPanelX, y, 18, GRAY);
             y += 22;
-            DrawText(value.c_str(), kPanelX, y, size, c);
+            DrawText(ellipsize(value, size, panelW).c_str(), kPanelX, y, size, c);
             y += size + 14;
         };
         field("TITLE", bi.title.empty() ? e.label : bi.title, 26, RAYWHITE);
@@ -138,7 +149,8 @@ void SongSelect::draw() const {
         }
     }
 
-    const char* hint = "UP/DOWN  select   ENTER  play   TAB  settings   ESC  quit";
-    DrawText(hint, w / 2 - MeasureText(hint, 22) / 2, GetScreenHeight() - 55, 22,
+    const char* hint =
+        "UP/DOWN select   ENTER play   TAB settings   F11 fullscreen   ESC quit";
+    DrawText(hint, w / 2 - MeasureText(hint, 22) / 2, kVirtualH - 55, 22,
              Fade(RAYWHITE, 0.6f));
 }

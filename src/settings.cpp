@@ -5,6 +5,7 @@
 
 #include <raylib.h>
 
+#include "render.h"
 #include "settings.h"
 
 namespace {
@@ -42,6 +43,10 @@ Settings loadSettings(const std::filesystem::path& file) {
                 s.audioOffsetMs = std::stoi(val);
             } else if (key == "scrollSpeed") {
                 s.scrollSpeed = std::stof(val);
+            } else if (key == "musicVolume") {
+                s.musicVolume = std::stof(val);
+            } else if (key == "effectVolume") {
+                s.effectVolume = std::stof(val);
             } else if (key == "keys") {
                 std::stringstream ss(val);
                 std::string tok;
@@ -62,14 +67,17 @@ void saveSettings(const Settings& s, const std::filesystem::path& file) {
     if (!out.is_open()) return;
     out << "audioOffsetMs=" << s.audioOffsetMs << "\n";
     out << "scrollSpeed=" << s.scrollSpeed << "\n";
+    out << "musicVolume=" << s.musicVolume << "\n";
+    out << "effectVolume=" << s.effectVolume << "\n";
     out << "keys=";
     for (int i = 0; i < 7; ++i) out << (i ? "," : "") << s.keys[i];
     out << "\n";
 }
 
-void SettingsScreen::run() {
+void SettingsScreen::run(Viewport& vp) {
     while (!WindowShouldClose()) {
-        constexpr int kFields = 2 + 7;  // offset, speed, 7 keybinds
+        constexpr int kKeybindBase = 4;       // 前 4 項為數值欄位
+        constexpr int kFields = kKeybindBase + 7;
 
         if (rebinding_ >= 0) {
             // 等待玩家按任意鍵作為新綁定
@@ -81,6 +89,7 @@ void SettingsScreen::run() {
                 rebinding_ = -1;
             }
         } else {
+            if (IsKeyPressed(KEY_F11)) ToggleBorderlessWindowed();
             if (IsKeyPressed(KEY_DOWN)) selected_ = (selected_ + 1) % kFields;
             if (IsKeyPressed(KEY_UP)) selected_ = (selected_ + kFields - 1) % kFields;
 
@@ -89,23 +98,27 @@ void SettingsScreen::run() {
                 s_.audioOffsetMs = std::clamp(s_.audioOffsetMs + dir * 5, -300, 300);
             } else if (selected_ == 1 && dir != 0) {
                 s_.scrollSpeed = std::clamp(s_.scrollSpeed + dir * 0.1f, 0.5f, 4.0f);
-            } else if (selected_ >= 2 &&
+            } else if (selected_ == 2 && dir != 0) {
+                s_.musicVolume = std::clamp(s_.musicVolume + dir * 0.05f, 0.0f, 1.0f);
+            } else if (selected_ == 3 && dir != 0) {
+                s_.effectVolume = std::clamp(s_.effectVolume + dir * 0.05f, 0.0f, 1.0f);
+            } else if (selected_ >= kKeybindBase &&
                        (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER))) {
-                rebinding_ = selected_ - 2;  // 進入重新綁定
+                rebinding_ = selected_ - kKeybindBase;  // 進入重新綁定
             }
 
             if (IsKeyPressed(KEY_ESCAPE)) return;
         }
 
-        BeginDrawing();
-        ClearBackground(Color{18, 18, 24, 255});
+        vp.begin(Color{18, 18, 24, 255});
         draw();
-        EndDrawing();
+        vp.end();
     }
 }
 
 void SettingsScreen::draw() const {
-    const int w = GetScreenWidth();
+    const int w = kVirtualW;
+    constexpr int kKeybindBase = 4;
     DrawText("SETTINGS", 40, 50, 48, RAYWHITE);
 
     auto drawRow = [&](int idx, const char* label, const std::string& value, int y) {
@@ -113,27 +126,32 @@ void SettingsScreen::draw() const {
         if (sel) DrawRectangle(30, y - 6, w - 60, 44, Color{70, 55, 80, 255});
         DrawText(label, 56, y, 26, sel ? RAYWHITE : Fade(RAYWHITE, 0.7f));
         const char* v = value.c_str();
-        const bool waiting = (rebinding_ == idx - 2);
+        const bool waiting = (rebinding_ == idx - kKeybindBase);
         DrawText(v, w - 56 - MeasureText(v, 26), y, 26,
                  waiting ? GOLD : (sel ? GOLD : Fade(RAYWHITE, 0.8f)));
     };
 
-    int y = 140;
+    int y = 120;
     drawRow(0, "Audio offset", TextFormat("%+d ms", s_.audioOffsetMs), y);
-    y += 52;
+    y += 48;
     drawRow(1, "Scroll speed", TextFormat("%.1fx", s_.scrollSpeed), y);
-    y += 64;
+    y += 48;
+    drawRow(2, "Music volume", TextFormat("%d%%", static_cast<int>(s_.musicVolume * 100)), y);
+    y += 48;
+    drawRow(3, "Effect volume", TextFormat("%d%%", static_cast<int>(s_.effectVolume * 100)),
+            y);
+    y += 60;
 
     DrawText("KEYBINDS", 56, y, 22, Fade(RAYWHITE, 0.55f));
-    y += 36;
+    y += 34;
     for (int i = 0; i < 7; ++i) {
         const std::string val = (rebinding_ == i) ? "press a key..." : keyName(s_.keys[i]);
-        drawRow(2 + i, TextFormat("Lane %d", i + 1), val, y);
-        y += 48;
+        drawRow(kKeybindBase + i, TextFormat("Lane %d", i + 1), val, y);
+        y += 44;
     }
 
     const char* hint =
         "UP/DOWN field   LEFT/RIGHT adjust   ENTER rebind key   ESC save & back";
-    DrawText(hint, w / 2 - MeasureText(hint, 20) / 2, GetScreenHeight() - 50, 20,
+    DrawText(hint, w / 2 - MeasureText(hint, 20) / 2, kVirtualH - 50, 20,
              Fade(RAYWHITE, 0.6f));
 }

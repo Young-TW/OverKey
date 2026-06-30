@@ -10,10 +10,12 @@
 // 視窗 + 音訊裝置的生命週期 guard，放在 main 最外層
 class RaylibApp {
 public:
-    RaylibApp(int width, int height, const char* title, int targetFps = 144) {
+    RaylibApp(int width, int height, const char* title, int targetFps = 240) {
+        // VSync：與螢幕刷新率同步，消除撕裂/judder（在低刷新率螢幕上感覺更順）
+        SetConfigFlags(FLAG_VSYNC_HINT);
         InitWindow(width, height, title);
         InitAudioDevice();
-        SetTargetFPS(targetFps);
+        SetTargetFPS(targetFps);  // VSync 未生效時的保險上限
     }
     ~RaylibApp() {
         if (IsAudioDeviceReady()) CloseAudioDevice();

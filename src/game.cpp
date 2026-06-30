@@ -7,6 +7,7 @@
 
 #include "game.h"
 #include "raii.h"
+#include "render.h"
 
 namespace {
 
@@ -112,38 +113,58 @@ Game::Game(Beatmap map, std::filesystem::path audioPath, Settings settings)
     songEndMs_ += kEndPadMs;
 }
 
-void Game::run() {
+void Game::run(Viewport& vp) {
     // 視窗與音訊裝置由外層（main）建立並持有；這裡只負責一局的邏輯。
     if (!map_.title.empty()) SetWindowTitle(("OverKey - " + map_.title).c_str());
 
     MusicRes music{audioPath_.string().c_str()};
     const bool haveMusic = music.valid();
+    if (haveMusic) SetMusicVolume(music.get(), settings_.musicVolume);
 
     SoundRes hitSound{makeHitSound()};
+    SetSoundVolume(hitSound.get(), settings_.effectVolume);
 
     const double startWall = GetTime() + kLeadInMs / 1000.0;  // 真正 t=0 的牆鐘時間
     bool musicStarted = false;
+    bool clockStarted = false;     // 是否已過開場倒數、進入正式時鐘
+    double songClockMs = -kLeadInMs;
     double songTimeMs = -kLeadInMs;
 
     while (!WindowShouldClose()) {
+        if (IsKeyPressed(KEY_F11)) ToggleBorderlessWindowed();
         if (phase_ == Phase::Playing) {
             if (IsKeyPressed(KEY_ESCAPE)) {  // 中途放棄，回選單
                 if (musicStarted) StopMusicStream(music.get());
                 return;
             }
-            // 時鐘：開場用牆鐘倒數到 0；音樂開始後改以音訊播放位置為準，避免飄移
-            songTimeMs = (GetTime() - startWall) * 1000.0;
-            if (haveMusic) {
-                if (!musicStarted && songTimeMs >= 0.0) {
-                    PlayMusicStream(music.get());
-                    musicStarted = true;
+
+            // 時鐘策略：每幀以 frame time 平滑前進，避免直接讀 GetMusicTimePlayed
+            // （音訊位置只在緩衝區更新時跳動 ~75ms，直接拿來當下落時鐘會頓挫）。
+            // 音訊位置僅作為錨點：偏差小→緩慢收斂，偏差大→直接對齊。
+            if (!clockStarted) {
+                songClockMs = (GetTime() - startWall) * 1000.0;  // 開場倒數（牆鐘平滑）
+                if (songClockMs >= 0.0) {
+                    clockStarted = true;
+                    songClockMs = 0.0;
+                    if (haveMusic) {
+                        PlayMusicStream(music.get());
+                        musicStarted = true;
+                    }
                 }
+            } else {
+                songClockMs += GetFrameTime() * 1000.0;
                 if (musicStarted) {
                     UpdateMusicStream(music.get());
-                    songTimeMs = GetMusicTimePlayed(music.get()) * 1000.0;
+                    const double mt = GetMusicTimePlayed(music.get()) * 1000.0;
+                    const double err = mt - songClockMs;
+                    if (std::abs(err) > 80.0) {
+                        songClockMs = mt;  // 大幅偏離（開頭/卡頓）直接對齊
+                    } else {
+                        songClockMs += err * 0.05;  // 平滑收斂回音訊
+                    }
                 }
             }
-            songTimeMs += offsetMs_;  // 套用音訊偏移，渲染與判定共用同一時鐘
+            songTimeMs = songClockMs + offsetMs_;  // 套用偏移，渲染與判定共用同一時鐘
 
             update(songTimeMs);
 
@@ -163,14 +184,13 @@ void Game::run() {
             }
         }
 
-        BeginDrawing();
-        ClearBackground(Color{18, 18, 24, 255});
+        vp.begin(Color{18, 18, 24, 255});
         if (phase_ == Phase::Playing) {
             drawPlayfield(songTimeMs);
         } else {
             drawResult();
         }
-        EndDrawing();
+        vp.end();
     }
 }
 

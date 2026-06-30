@@ -8,12 +8,14 @@
 #include "map.h"
 #include "settings.h"
 
+class Viewport;
+
 // 一局下落式音遊的狀態與主迴圈。
 // 只負責遊戲邏輯；資源生命週期交給 raii.h 的包裝。
 class Game {
 public:
     Game(Beatmap map, std::filesystem::path audioPath, Settings settings);
-    void run();
+    void run(Viewport& vp);
 
     enum class Phase { Playing, Result };
     enum class NoteState { Idle, Holding, Done };  // Holding 僅用於長押

@@ -19,8 +19,7 @@ constexpr int kOriginX = (kScreenW - kPlayfieldW) / 2;
 constexpr float kJudgeY = kScreenH - 140.0f;          // 判定線 Y
 constexpr float kNoteH = 22.0f;
 
-constexpr double kApproachMs = 550.0;                  // 音符自頂端落到判定線的時間
-constexpr double kPxPerMs = kJudgeY / kApproachMs;     // 下落速度
+constexpr double kBaseApproachMs = 550.0;              // scrollSpeed=1 時的下落時間
 
 constexpr double kPerfectMs = 50.0;                    // |誤差| <= 此值 → Perfect
 constexpr double kGoodMs = 120.0;                      // |誤差| <= 此值 → Good，超過即 Miss
@@ -48,15 +47,19 @@ constexpr Color kNoteColors[kCols] = {
 float laneX(int col) { return kOriginX + col * kLaneW; }
 
 // 給定音符時間，回傳此刻其頭部中心應在的 Y
-float noteY(int noteTimeMs, double songTimeMs) {
-    return kJudgeY - static_cast<float>((noteTimeMs - songTimeMs) * kPxPerMs);
+float noteY(int noteTimeMs, double songTimeMs, double pxPerMs) {
+    return kJudgeY - static_cast<float>((noteTimeMs - songTimeMs) * pxPerMs);
 }
 
 }  // namespace
 
-Game::Game(Beatmap map, std::filesystem::path audioPath)
+Game::Game(Beatmap map, std::filesystem::path audioPath, Settings settings)
     : map_(std::move(map)),
       audioPath_(std::move(audioPath)),
+      settings_(settings),
+      offsetMs_(settings.audioOffsetMs),
+      approachMs_(kBaseApproachMs / settings.scrollSpeed),
+      pxPerMs_(kJudgeY / approachMs_),
       state_(map_.notes.size(), NoteState::Idle) {
     holding_.fill(-1);
     for (const ManiaNote& n : map_.notes) {
@@ -96,6 +99,7 @@ void Game::run() {
                     songTimeMs = GetMusicTimePlayed(music.get()) * 1000.0;
                 }
             }
+            songTimeMs += offsetMs_;  // 套用音訊偏移，渲染與判定共用同一時鐘
 
             update(songTimeMs);
 
@@ -167,6 +171,10 @@ void Game::judgePress(int column, double songTimeMs) {
         }
     }
     if (best < 0) return;
+
+    // 記錄有號誤差（>0 = 偏晚按）供結算校正建議
+    signedErrSum_ += songTimeMs - map_.notes[best].startTime;
+    ++errSamples_;
 
     addJudgment(judgeByError(bestAbs));  // 頭部判定
     if (map_.notes[best].endTime > 0) {
@@ -265,7 +273,7 @@ void Game::drawPlayfield(double songTimeMs) const {
         // 按住中的長押：頭部固定在判定線，身體隨尾端縮短
         const float headY = (state_[i] == NoteState::Holding)
                                 ? kJudgeY
-                                : noteY(n.startTime, songTimeMs);
+                                : noteY(n.startTime, songTimeMs, pxPerMs_);
         if (headY < -kNoteH || headY - kNoteH > kScreenH) {
             if (n.endTime <= 0) continue;
         }
@@ -274,7 +282,7 @@ void Game::drawPlayfield(double songTimeMs) const {
         const float w = kLaneW - 8;
 
         if (n.endTime > 0) {  // 長押身體
-            const float tailY = noteY(n.endTime, songTimeMs);
+            const float tailY = noteY(n.endTime, songTimeMs, pxPerMs_);
             const float top = std::min(headY, tailY);
             const float h = std::abs(headY - tailY) + kNoteH;
             const float alpha = (state_[i] == NoteState::Holding) ? 0.85f : 0.55f;
@@ -363,6 +371,17 @@ void Game::drawResult() const {
     row("PERFECT", TextFormat("%d", perfects_), SKYBLUE);
     row("GOOD", TextFormat("%d", goods_), GREEN);
     row("MISS", TextFormat("%d", misses_), RED);
+
+    // 校正輔助：平均誤差與建議 offset
+    if (errSamples_ > 0) {
+        const double mean = signedErrSum_ / errSamples_;  // >0 = 偏晚按
+        const int suggested = settings_.audioOffsetMs - static_cast<int>(std::lround(mean));
+        const char* m = TextFormat("MEAN TIMING  %+.1f ms  (%s)", mean,
+                                   mean > 0 ? "late" : "early");
+        DrawText(m, cx - MeasureText(m, 24) / 2, y + 20, 24, Fade(RAYWHITE, 0.8f));
+        const char* sug = TextFormat("suggested offset: %+d ms (TAB in menu)", suggested);
+        DrawText(sug, cx - MeasureText(sug, 22) / 2, y + 54, 22, Fade(GOLD, 0.85f));
+    }
 
     const char* hint = "Press ENTER to exit";
     DrawText(hint, cx - MeasureText(hint, 24) / 2, kScreenH - 80, 24, Fade(RAYWHITE, 0.6f));

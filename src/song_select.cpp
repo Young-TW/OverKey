@@ -39,7 +39,7 @@ void SongSelect::clampScroll() {
     scroll_ = std::max(0, scroll_);
 }
 
-std::optional<std::filesystem::path> SongSelect::run() {
+MenuResult SongSelect::run() {
     SetWindowTitle("OverKey - Select Song");
 
     while (!WindowShouldClose()) {
@@ -52,17 +52,18 @@ std::optional<std::filesystem::path> SongSelect::run() {
             clampScroll();
 
             if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER)) {
-                return entries_[selected_].path;
+                return {MenuAction::Play, entries_[selected_].path};
             }
         }
-        if (IsKeyPressed(KEY_ESCAPE)) return std::nullopt;
+        if (IsKeyPressed(KEY_TAB)) return {MenuAction::Settings, {}};
+        if (IsKeyPressed(KEY_ESCAPE)) return {MenuAction::Quit, {}};
 
         BeginDrawing();
         ClearBackground(Color{18, 18, 24, 255});
         draw();
         EndDrawing();
     }
-    return std::nullopt;  // 視窗關閉
+    return {MenuAction::Quit, {}};  // 視窗關閉
 }
 
 void SongSelect::draw() const {
@@ -96,7 +97,7 @@ void SongSelect::draw() const {
     DrawText(TextFormat("%d / %d", selected_ + 1, static_cast<int>(entries_.size())),
              w - 140, 120, 22, GRAY);
 
-    const char* hint = "UP/DOWN  select      ENTER  play      ESC  quit";
+    const char* hint = "UP/DOWN  select   ENTER  play   TAB  settings   ESC  quit";
     DrawText(hint, w / 2 - MeasureText(hint, 22) / 2, GetScreenHeight() - 55, 22,
              Fade(RAYWHITE, 0.6f));
 }

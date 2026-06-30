@@ -12,3 +12,5 @@
 *.exe
 
 /maps
+
+/overkey.cfg

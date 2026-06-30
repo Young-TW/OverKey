@@ -6,12 +6,13 @@
 #include <vector>
 
 #include "map.h"
+#include "settings.h"
 
 // 一局下落式音遊的狀態與主迴圈。
 // 只負責遊戲邏輯；資源生命週期交給 raii.h 的包裝。
 class Game {
 public:
-    Game(Beatmap map, std::filesystem::path audioPath);
+    Game(Beatmap map, std::filesystem::path audioPath, Settings settings);
     void run();
 
 private:
@@ -34,12 +35,20 @@ private:
 
     Beatmap map_;
     std::filesystem::path audioPath_;
+    Settings settings_;
+
+    double offsetMs_ = 0.0;               // = settings_.audioOffsetMs
+    double approachMs_ = 0.0;             // 下落時間，由 scrollSpeed 決定
+    double pxPerMs_ = 0.0;                // 下落速度
 
     std::vector<NoteState> state_;        // 與 map_.notes 對齊
     std::array<int, 7> holding_{};        // 各軌道正在按住的長押 index，-1 = 無
 
     Phase phase_ = Phase::Playing;
     double songEndMs_ = 0.0;              // 最後一個音符時間 + 收尾餘量
+
+    double signedErrSum_ = 0.0;           // 命中音符的有號誤差和，用於校正建議
+    int errSamples_ = 0;
 
     int score_ = 0;
     int combo_ = 0;

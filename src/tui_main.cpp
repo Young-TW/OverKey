@@ -253,6 +253,21 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit)
     auto prev = Clock::now();
     auto nextFrame = prev + kFramePeriod;
     bool playing = true;
+    bool paused = false;
+    int pauseSel = 0;  // 0 Resume / 1 Retry / 2 Quit
+
+    auto restartAttempt = [&] {
+        if (musicStarted) {
+            ResumeMusicStream(music.get());  // 若暫停中，先恢復才能正確倒回 0
+            StopMusicStream(music.get());
+        }
+        session = PlaySession(map.notes);
+        clock = SongClock{kLeadInMs};
+        musicStarted = false;
+        songTimeMs = -kLeadInMs;
+        playing = true;
+        paused = false;
+    };
 
     while (true) {
         const auto frameStart = Clock::now();
@@ -274,39 +289,60 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit)
 
         // ---- 輸入 ----
         for (const KeyEvent& e : term.poll()) {
-            if (e.type == KeyEvent::Press && (e.code == 27 || e.code == 'q' || e.code == 3)) {
+            const bool press = (e.type == KeyEvent::Press);
+            if (press && e.code == 3) {  // Ctrl-C 強制回選單
                 if (musicStarted) StopMusicStream(music.get());
-                return;  // 回選單
+                return;
             }
-            if (e.type == KeyEvent::Press && (e.code == '`' || e.code == '~')) {  // 快速重試
-                if (musicStarted) StopMusicStream(music.get());
-                session = PlaySession(map.notes);
-                clock = SongClock{kLeadInMs};
-                musicStarted = false;
-                songTimeMs = -kLeadInMs;
-                playing = true;
+            if (press && (e.code == '`' || e.code == '~')) {  // 快速重試（任何狀態）
+                restartAttempt();
                 continue;
             }
-            if (e.type == KeyEvent::Press &&
-                (e.code == '3' || e.code == '4' || e.code == kKeyF3 || e.code == kKeyF4)) {
-                const bool faster = (e.code == '4' || e.code == kKeyF4);  // 3 慢 / 4 快
+            if (press && (e.code == '3' || e.code == '4' || e.code == kKeyF3 ||
+                          e.code == kKeyF4)) {  // 速度 3 慢 / 4 快
+                const bool faster = (e.code == '4' || e.code == kKeyF4);
                 settings.scrollSpeed =
                     std::clamp(settings.scrollSpeed + (faster ? 0.1f : -0.1f), 0.5f, 4.0f);
                 approach = kBaseApproachMs / settings.scrollSpeed;
                 continue;
             }
-            if (playing) {
+
+            if (paused) {
+                if (!press) continue;
+                if (e.code == kKeyUp || e.code == 'k') pauseSel = (pauseSel + 2) % 3;
+                if (e.code == kKeyDown || e.code == 'j') pauseSel = (pauseSel + 1) % 3;
+                if (e.code == 27) {  // Esc 續玩
+                    paused = false;
+                    if (musicStarted) ResumeMusicStream(music.get());
+                } else if (e.code == 13 || e.code == 32) {
+                    if (pauseSel == 0) {  // Resume
+                        paused = false;
+                        if (musicStarted) ResumeMusicStream(music.get());
+                    } else if (pauseSel == 1) {  // Retry
+                        restartAttempt();
+                    } else {  // Quit
+                        if (musicStarted) StopMusicStream(music.get());
+                        return;
+                    }
+                }
+            } else if (playing) {
+                if (press && e.code == 27) {  // 開啟暫停選單
+                    paused = true;
+                    pauseSel = 0;
+                    if (musicStarted) PauseMusicStream(music.get());
+                    continue;
+                }
                 const int lane = laneOf(e.code, laneKeys, keyCount);
                 if (lane < 0) continue;
-                if (e.type == KeyEvent::Press) session.press(lane, songTimeMs);
+                if (press) session.press(lane, songTimeMs);
                 else if (e.type == KeyEvent::Release) session.release(lane, songTimeMs);
-            } else if (e.type == KeyEvent::Press && (e.code == 13 || e.code == 32)) {
+            } else if (press && (e.code == 13 || e.code == 32 || e.code == 27)) {
                 return;  // 結算畫面 → 回選單
             }
         }
 
         // ---- 更新 ----
-        if (playing) {
+        if (playing && !paused) {
             if (musicStarted) UpdateMusicStream(music.get());
             const double audioPos =
                 musicStarted ? GetMusicTimePlayed(music.get()) * 1000.0 : -1.0;
@@ -384,6 +420,19 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit)
                                     : std::string(1, (char)normKey(laneKeys[c]));
                 canvas.putText(originCol + c * laneCells + laneCells / 2, judgeRow + 1, k,
                                kGray);
+            }
+            // 暫停選單（疊在凍結畫面上）
+            if (paused) {
+                const int cx = term.cols() / 2;
+                const int my = term.rows() / 2 - 2;
+                canvas.putText(cx - 3, my - 2, "PAUSED", kWhite);
+                const char* items[] = {"Resume", "Retry", "Quit"};
+                for (int i = 0; i < 3; ++i) {
+                    const bool sel = (i == pauseSel);
+                    const std::string line =
+                        (sel ? "> " : "  ") + std::string(items[i]);
+                    canvas.putText(cx - 4, my + i, line, sel ? kGold : kGray);
+                }
             }
         } else {
             // 結算

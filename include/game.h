@@ -20,10 +20,11 @@ public:
     float scrollSpeed() const { return settings_.scrollSpeed; }
 
 private:
-    enum class Phase { Playing, Result };
+    enum class Phase { Playing, Paused, Result };
 
     void drawPlayfield(double songTimeMs) const;
     void drawResult() const;
+    void drawPauseOverlay() const;
     void triggerFlash(int lane, Judgment j);
 
     Beatmap map_;
@@ -41,6 +42,7 @@ private:
     double pxPerMs_ = 0.0;     // 下落速度
 
     Phase phase_ = Phase::Playing;
+    int pauseSel_ = 0;  // 暫停選單選項：0 Resume / 1 Retry / 2 Quit
 
     // 命中回饋（用牆鐘計時，與遊戲邏輯時鐘分開）；上限 7 軌
     std::array<double, 7> laneFlash_{};

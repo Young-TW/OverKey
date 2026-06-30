@@ -103,7 +103,10 @@ void Game::run(Viewport& vp) {
 
     // 重置為新一輪嘗試（快速重試用）
     auto restart = [&] {
-        if (musicStarted) StopMusicStream(music.get());
+        if (musicStarted) {
+            ResumeMusicStream(music.get());  // 若處於暫停，先恢復才能正確 stop 並倒回 0
+            StopMusicStream(music.get());
+        }
         session_ = PlaySession(map_.notes);
         phase_ = Phase::Playing;
         laneFlash_.fill(-10.0);
@@ -112,12 +115,12 @@ void Game::run(Viewport& vp) {
         songTimeMs = -kLeadInMs;
     };
 
+    bool quitToMenu = false;  // 設旗標後於 vp.end() 之後再 return，確保該幀有輪詢輸入
     while (!WindowShouldClose()) {
         if (IsKeyPressed(KEY_F11)) ToggleBorderlessWindowed();
-        if (IsKeyPressed(KEY_GRAVE)) {  // ` / ~ 快速重試
-            restart();
-            continue;
-        }
+        // ` / ~ 快速重試。注意：不可 continue，否則會跳過 vp.end()(EndDrawing) 的輸入輪詢，
+        // 導致按鍵狀態不更新、每幀重複觸發 → 凍結。
+        if (IsKeyPressed(KEY_GRAVE)) restart();
         {  // 下落速度：3 變慢 / 4 變快（F3/F4 同義）
             const bool slower = IsKeyPressed(KEY_THREE) || IsKeyPressed(KEY_F3);
             const bool faster = IsKeyPressed(KEY_FOUR) || IsKeyPressed(KEY_F4);
@@ -129,12 +132,11 @@ void Game::run(Viewport& vp) {
             }
         }
 
-        if (phase_ == Phase::Playing) {
-            if (IsKeyPressed(KEY_ESCAPE)) {  // 中途放棄，回選單
-                if (musicStarted) StopMusicStream(music.get());
-                return;
-            }
-
+        if (phase_ == Phase::Playing && IsKeyPressed(KEY_ESCAPE)) {  // 開啟暫停選單
+            phase_ = Phase::Paused;
+            pauseSel_ = 0;
+            if (musicStarted) PauseMusicStream(music.get());
+        } else if (phase_ == Phase::Playing) {
             // 平滑時鐘：每幀以 frame delta 前進，音訊位置只作緩慢校正
             if (musicStarted) UpdateMusicStream(music.get());
             const double audioPos =
@@ -165,20 +167,39 @@ void Game::run(Viewport& vp) {
                 phase_ = Phase::Result;
                 if (musicStarted) StopMusicStream(music.get());
             }
+        } else if (phase_ == Phase::Paused) {
+            if (IsKeyPressed(KEY_DOWN)) pauseSel_ = (pauseSel_ + 1) % 3;
+            if (IsKeyPressed(KEY_UP)) pauseSel_ = (pauseSel_ + 2) % 3;
+            const bool confirm = IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER);
+            if (IsKeyPressed(KEY_ESCAPE)) {  // Esc 直接續玩
+                phase_ = Phase::Playing;
+                if (musicStarted) ResumeMusicStream(music.get());
+            } else if (confirm && pauseSel_ == 0) {  // Resume
+                phase_ = Phase::Playing;
+                if (musicStarted) ResumeMusicStream(music.get());
+            } else if (confirm && pauseSel_ == 1) {  // Retry
+                restart();
+            } else if (confirm && pauseSel_ == 2) {  // Quit
+                if (musicStarted) StopMusicStream(music.get());
+                quitToMenu = true;
+            }
         } else {  // Result：Enter/Esc 回選單
             if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER) ||
                 IsKeyPressed(KEY_ESCAPE)) {
-                return;
+                quitToMenu = true;
             }
         }
 
         vp.begin(Color{18, 18, 24, 255});
-        if (phase_ == Phase::Playing) {
-            drawPlayfield(songTimeMs);
-        } else {
+        if (phase_ == Phase::Result) {
             drawResult();
+        } else {
+            drawPlayfield(songTimeMs);  // Paused 顯示凍結畫面
+            if (phase_ == Phase::Paused) drawPauseOverlay();
         }
-        vp.end();
+        vp.end();  // 含 EndDrawing→輪詢輸入，消化掉本幀的按鍵邊緣
+
+        if (quitToMenu) return;  // 確保上面那幀已輪詢，避免按鍵殘留到選單
     }
 }
 
@@ -368,4 +389,26 @@ void Game::drawResult() const {
 
     const char* hint = "Press ENTER to exit";
     DrawText(hint, cx - MeasureText(hint, 24) / 2, kScreenH - 80, 24, Fade(RAYWHITE, 0.6f));
+}
+
+void Game::drawPauseOverlay() const {
+    DrawRectangle(0, 0, kScreenW, kScreenH, Fade(BLACK, 0.6f));  // 變暗
+    const int cx = kScreenW / 2;
+    DrawText("PAUSED", cx - MeasureText("PAUSED", 56) / 2, 300, 56, RAYWHITE);
+
+    const char* items[] = {"Resume", "Retry", "Quit to menu"};
+    for (int i = 0; i < 3; ++i) {
+        const bool sel = (i == pauseSel_);
+        const int fs = 34;
+        const int y = 430 + i * 60;
+        if (sel) {
+            const int w = MeasureText(items[i], fs);
+            DrawRectangle(cx - w / 2 - 20, y - 8, w + 40, fs + 16, Color{70, 55, 80, 255});
+        }
+        DrawText(items[i], cx - MeasureText(items[i], fs) / 2, y, fs,
+                 sel ? GOLD : Fade(RAYWHITE, 0.8f));
+    }
+
+    const char* hint = "UP/DOWN select   ENTER confirm   ESC resume   ` retry";
+    DrawText(hint, cx - MeasureText(hint, 20) / 2, kScreenH - 70, 20, Fade(RAYWHITE, 0.6f));
 }

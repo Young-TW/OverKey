@@ -103,13 +103,7 @@ std::vector<Entry> scanMaps(const fs::path& dir) {
     return out;
 }
 
-// 簡單睡到目標幀時間（~120fps）
-void frameSleep(Clock::time_point frameStart) {
-    using namespace std::chrono;
-    const auto target = microseconds(1000000 / 120);
-    const auto elapsed = duration_cast<microseconds>(Clock::now() - frameStart);
-    if (elapsed < target) std::this_thread::sleep_for(target - elapsed);
-}
+constexpr auto kFramePeriod = std::chrono::microseconds(1000000 / 120);  // 目標 120fps
 
 // 回傳 -1 = 離開程式；否則為選擇的 index
 int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected) {
@@ -199,6 +193,7 @@ void playSong(Terminal& term, const Entry& entry, const Settings& settings, Soun
     BrailleCanvas canvas(term.cols(), term.rows());
     std::string out;
     auto prev = Clock::now();
+    auto nextFrame = prev + kFramePeriod;
     bool playing = true;
 
     while (true) {
@@ -344,7 +339,11 @@ void playSong(Terminal& term, const Entry& entry, const Settings& settings, Soun
 
         canvas.flush(out);
         term.write(out);
-        frameSleep(frameStart);
+
+        // 穩定步調：睡到固定節奏的下一幀（落後則重設，避免雪球）
+        std::this_thread::sleep_until(nextFrame);
+        nextFrame += kFramePeriod;
+        if (nextFrame < Clock::now()) nextFrame = Clock::now() + kFramePeriod;
     }
 }
 

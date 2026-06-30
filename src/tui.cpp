@@ -185,6 +185,7 @@ void BrailleCanvas::putText(int cx, int cy, const std::string& s, Rgb color) {
 
 void BrailleCanvas::flush(std::string& out) {
     out.clear();
+    out += "\x1b[?2026h";  // 開始同步輸出：終端機原子換幀，避免半幀撕裂
     int lastR = 255, lastG = 255, lastB = 255;
     bool colorSet = false;
     int curRow = -1, curCol = -1;
@@ -216,6 +217,7 @@ void BrailleCanvas::flush(std::string& out) {
             curCol = x + 1;  // 終端機自動右移
         }
     }
+    out += "\x1b[?2026l";  // 結束同步輸出
 }
 
 }  // namespace tui

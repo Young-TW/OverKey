@@ -1,6 +1,5 @@
 #include <algorithm>
 #include <cmath>
-#include <cstdlib>
 #include <utility>
 
 #include <raylib.h>
@@ -26,6 +25,10 @@ constexpr double kPxPerMs = kJudgeY / kApproachMs;     // 下落速度
 constexpr double kPerfectMs = 50.0;                    // |誤差| <= 此值 → Perfect
 constexpr double kGoodMs = 120.0;                      // |誤差| <= 此值 → Good，超過即 Miss
 constexpr double kLeadInMs = 2000.0;                   // 開場倒數，避免首批音符瞬間出現
+constexpr double kEndPadMs = 1500.0;                   // 最後音符後到結算的餘量
+
+constexpr int kPerfectPts = 300;
+constexpr int kGoodPts = 100;
 
 // 7K 預設鍵位：S D F [Space] J K L
 constexpr int kKeys[kCols] = {
@@ -54,7 +57,15 @@ float noteY(int noteTimeMs, double songTimeMs) {
 Game::Game(Beatmap map, std::filesystem::path audioPath)
     : map_(std::move(map)),
       audioPath_(std::move(audioPath)),
-      judged_(map_.notes.size(), false) {}
+      state_(map_.notes.size(), NoteState::Idle) {
+    holding_.fill(-1);
+    for (const ManiaNote& n : map_.notes) {
+        const int last = (n.endTime > 0) ? n.endTime : n.startTime;
+        songEndMs_ = std::max(songEndMs_, static_cast<double>(last));
+        totalUnits_ += (n.endTime > 0) ? 2 : 1;  // 長押算頭、尾兩個判定單位
+    }
+    songEndMs_ += kEndPadMs;
+}
 
 void Game::run() {
     RaylibApp app{kScreenW, kScreenH, "OverKey"};
@@ -65,54 +76,83 @@ void Game::run() {
 
     const double startWall = GetTime() + kLeadInMs / 1000.0;  // 真正 t=0 的牆鐘時間
     bool musicStarted = false;
+    double songTimeMs = -kLeadInMs;
 
     while (!WindowShouldClose()) {
-        // 時鐘：開場用牆鐘（會由負數倒數到 0）；音樂開始後改以音訊播放位置為準，避免飄移
-        double songTimeMs = (GetTime() - startWall) * 1000.0;
-        if (haveMusic) {
-            if (!musicStarted && songTimeMs >= 0.0) {
-                PlayMusicStream(music.get());
-                musicStarted = true;
+        if (phase_ == Phase::Playing) {
+            // 時鐘：開場用牆鐘倒數到 0；音樂開始後改以音訊播放位置為準，避免飄移
+            songTimeMs = (GetTime() - startWall) * 1000.0;
+            if (haveMusic) {
+                if (!musicStarted && songTimeMs >= 0.0) {
+                    PlayMusicStream(music.get());
+                    musicStarted = true;
+                }
+                if (musicStarted) {
+                    UpdateMusicStream(music.get());
+                    songTimeMs = GetMusicTimePlayed(music.get()) * 1000.0;
+                }
             }
-            if (musicStarted) {
-                UpdateMusicStream(music.get());
-                songTimeMs = GetMusicTimePlayed(music.get()) * 1000.0;
-            }
-        }
 
-        update(songTimeMs);
+            update(songTimeMs);
+
+            if (songTimeMs >= songEndMs_) {
+                phase_ = Phase::Result;
+                if (musicStarted) StopMusicStream(music.get());
+            }
+        } else {  // Result
+            if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER)) break;
+        }
 
         BeginDrawing();
         ClearBackground(Color{18, 18, 24, 255});
-        draw(songTimeMs);
+        if (phase_ == Phase::Playing) {
+            drawPlayfield(songTimeMs);
+        } else {
+            drawResult();
+        }
         EndDrawing();
     }
 }
 
 void Game::update(double songTimeMs) {
-    // 輸入判定
+    // 輸入：按下判頭，放開判長押尾
     for (int c = 0; c < kCols; ++c) {
         if (IsKeyPressed(kKeys[c])) judgePress(c, songTimeMs);
+        if (IsKeyReleased(kKeys[c])) judgeRelease(c, songTimeMs);
     }
 
-    // 漏接：音符通過判定線超過 Good 視窗仍未判定 → Miss
+    // 逐音符推進狀態
     for (std::size_t i = 0; i < map_.notes.size(); ++i) {
-        if (judged_[i]) continue;
-        if (songTimeMs - map_.notes[i].startTime > kGoodMs) {
-            judged_[i] = true;
-            combo_ = 0;
-            ++misses_;
-            lastJudge_ = Judgment::Miss;
+        const ManiaNote& n = map_.notes[i];
+        switch (state_[i]) {
+            case NoteState::Idle:
+                // 頭部通過判定線超過 Good 視窗仍未按 → Miss（長押則頭尾都算漏）
+                if (songTimeMs - n.startTime > kGoodMs) {
+                    state_[i] = NoteState::Done;
+                    addJudgment(Judgment::Miss);
+                    if (n.endTime > 0) addJudgment(Judgment::Miss);
+                }
+                break;
+            case NoteState::Holding:
+                // 一路按到尾端 → 尾部 Perfect（提早放開會在 judgeRelease 處理）
+                if (songTimeMs >= n.endTime) {
+                    state_[i] = NoteState::Done;
+                    holding_[n.column] = -1;
+                    addJudgment(Judgment::Perfect);
+                }
+                break;
+            case NoteState::Done:
+                break;
         }
     }
 }
 
 void Game::judgePress(int column, double songTimeMs) {
-    // 找該軌道中最接近現在、且落在 Good 視窗內、尚未判定的音符
+    // 找該軌道中最接近現在、落在 Good 視窗內、尚未判定的音符頭
     int best = -1;
     double bestAbs = kGoodMs + 1.0;
     for (std::size_t i = 0; i < map_.notes.size(); ++i) {
-        if (judged_[i] || map_.notes[i].column != column) continue;
+        if (state_[i] != NoteState::Idle || map_.notes[i].column != column) continue;
         const double d = std::abs(map_.notes[i].startTime - songTimeMs);
         if (d <= kGoodMs && d < bestAbs) {
             bestAbs = d;
@@ -121,32 +161,88 @@ void Game::judgePress(int column, double songTimeMs) {
     }
     if (best < 0) return;
 
-    judged_[best] = true;
-    if (bestAbs <= kPerfectMs) {
-        score_ += 300;
-        ++perfects_;
-        lastJudge_ = Judgment::Perfect;
+    addJudgment(judgeByError(bestAbs));  // 頭部判定
+    if (map_.notes[best].endTime > 0) {
+        state_[best] = NoteState::Holding;  // 長押：開始按住，尾部待判
+        holding_[column] = best;
     } else {
-        score_ += 100;
-        ++goods_;
-        lastJudge_ = Judgment::Good;
+        state_[best] = NoteState::Done;
     }
-    ++combo_;
+}
+
+void Game::judgeRelease(int column, double songTimeMs) {
+    const int idx = holding_[column];
+    if (idx < 0) return;  // 該軌道沒有正在按住的長押
+
+    const ManiaNote& n = map_.notes[idx];
+    state_[idx] = NoteState::Done;
+    holding_[column] = -1;
+
+    const double err = std::abs(songTimeMs - n.endTime);
+    if (songTimeMs < n.endTime - kGoodMs) {
+        addJudgment(Judgment::Miss);  // 提早放開
+    } else {
+        addJudgment(judgeByError(err));  // 在尾端視窗內放開
+    }
+}
+
+Game::Judgment Game::judgeByError(double absErrMs) const {
+    if (absErrMs <= kPerfectMs) return Judgment::Perfect;
+    if (absErrMs <= kGoodMs) return Judgment::Good;
+    return Judgment::Miss;
+}
+
+void Game::addJudgment(Judgment j) {
+    lastJudge_ = j;
+    switch (j) {
+        case Judgment::Perfect:
+            score_ += kPerfectPts;
+            pointsAccum_ += kPerfectPts;
+            ++perfects_;
+            ++combo_;
+            break;
+        case Judgment::Good:
+            score_ += kGoodPts;
+            pointsAccum_ += kGoodPts;
+            ++goods_;
+            ++combo_;
+            break;
+        case Judgment::Miss:
+            ++misses_;
+            combo_ = 0;
+            break;
+        case Judgment::None:
+            return;
+    }
     maxCombo_ = std::max(maxCombo_, combo_);
 }
 
-void Game::draw(double songTimeMs) const {
-    // 軌道底色
+double Game::accuracy() const {
+    if (totalUnits_ == 0) return 0.0;
+    return static_cast<double>(pointsAccum_) / (totalUnits_ * kPerfectPts) * 100.0;
+}
+
+const char* Game::grade() const {
+    if (misses_ == 0 && goods_ == 0 && perfects_ > 0) return "SS";
+    const double acc = accuracy();
+    if (acc >= 95.0) return "S";
+    if (acc >= 90.0) return "A";
+    if (acc >= 80.0) return "B";
+    if (acc >= 70.0) return "C";
+    return "D";
+}
+
+void Game::drawPlayfield(double songTimeMs) const {
+    // 軌道底色（按下時提亮）
     for (int c = 0; c < kCols; ++c) {
         Color col = kLaneColors[c];
-        if (IsKeyDown(kKeys[c])) {  // 按下時提亮
+        if (IsKeyDown(kKeys[c])) {
             col = Color{static_cast<unsigned char>(std::min(255, col.r + 40)),
                         static_cast<unsigned char>(std::min(255, col.g + 40)),
                         static_cast<unsigned char>(std::min(255, col.b + 40)), 255};
         }
         DrawRectangle(static_cast<int>(laneX(c)), 0, kLaneW, kScreenH, col);
     }
-    // 軌道分隔線
     for (int c = 0; c <= kCols; ++c) {
         DrawLine(static_cast<int>(laneX(c)), 0, static_cast<int>(laneX(c)), kScreenH,
                  Color{30, 30, 38, 255});
@@ -155,24 +251,31 @@ void Game::draw(double songTimeMs) const {
     // 判定線
     DrawRectangle(kOriginX, static_cast<int>(kJudgeY) - 3, kPlayfieldW, 6, RAYWHITE);
 
-    // 音符（含長押尾巴），只畫畫面範圍內、尚未判定的
+    // 音符（含長押尾巴），只畫尚未完成、且在畫面範圍內的
     for (std::size_t i = 0; i < map_.notes.size(); ++i) {
-        if (judged_[i]) continue;
+        if (state_[i] == NoteState::Done) continue;
         const ManiaNote& n = map_.notes[i];
-        const float y = noteY(n.startTime, songTimeMs);
-        if (y < -kNoteH || y - kNoteH > kScreenH) continue;
+        // 按住中的長押：頭部固定在判定線，身體隨尾端縮短
+        const float headY = (state_[i] == NoteState::Holding)
+                                ? kJudgeY
+                                : noteY(n.startTime, songTimeMs);
+        if (headY < -kNoteH || headY - kNoteH > kScreenH) {
+            if (n.endTime <= 0) continue;
+        }
 
         const float x = laneX(n.column) + 4;
         const float w = kLaneW - 8;
 
-        if (n.endTime > 0) {  // 長押：從頭畫到尾的長條
+        if (n.endTime > 0) {  // 長押身體
             const float tailY = noteY(n.endTime, songTimeMs);
-            const float top = std::min(y, tailY);
-            const float h = std::abs(y - tailY) + kNoteH;
+            const float top = std::min(headY, tailY);
+            const float h = std::abs(headY - tailY) + kNoteH;
+            const float alpha = (state_[i] == NoteState::Holding) ? 0.85f : 0.55f;
             DrawRectangleRounded({x, top - kNoteH / 2, w, h}, 0.4f, 4,
-                                 Fade(kNoteColors[n.column], 0.55f));
+                                 Fade(kNoteColors[n.column], alpha));
         }
-        DrawRectangleRounded({x, y - kNoteH / 2, w, kNoteH}, 0.4f, 4, kNoteColors[n.column]);
+        DrawRectangleRounded({x, headY - kNoteH / 2, w, kNoteH}, 0.4f, 4,
+                             kNoteColors[n.column]);
     }
 
     // 開場倒數
@@ -188,12 +291,13 @@ void Game::draw(double songTimeMs) const {
     DrawText(TextFormat("SCORE  %08d", score_), 20, 30, 28, RAYWHITE);
     DrawText(TextFormat("COMBO  %d", combo_), 20, 70, 24, combo_ > 0 ? GOLD : GRAY);
     DrawText(TextFormat("MAX    %d", maxCombo_), 20, 100, 20, GRAY);
+    DrawText(TextFormat("ACC    %.2f%%", accuracy()), 20, 130, 20, RAYWHITE);
 
-    DrawText(TextFormat("PERFECT %d", perfects_), 20, 150, 20, SKYBLUE);
-    DrawText(TextFormat("GOOD    %d", goods_), 20, 175, 20, GREEN);
-    DrawText(TextFormat("MISS    %d", misses_), 20, 200, 20, RED);
+    DrawText(TextFormat("PERFECT %d", perfects_), 20, 180, 20, SKYBLUE);
+    DrawText(TextFormat("GOOD    %d", goods_), 20, 205, 20, GREEN);
+    DrawText(TextFormat("MISS    %d", misses_), 20, 230, 20, RED);
 
-    // 最近一次判定（畫在判定線上方中央）
+    // 最近一次判定
     const char* jtxt = nullptr;
     Color jcol = RAYWHITE;
     switch (lastJudge_) {
@@ -218,4 +322,41 @@ void Game::draw(double songTimeMs) const {
     }
 
     DrawFPS(kScreenW - 90, 10);
+}
+
+void Game::drawResult() const {
+    const int cx = kScreenW / 2;
+
+    DrawText("RESULT", cx - MeasureText("RESULT", 48) / 2, 90, 48, RAYWHITE);
+    if (!map_.title.empty()) {
+        DrawText(map_.title.c_str(), cx - MeasureText(map_.title.c_str(), 24) / 2, 150, 24,
+                 GRAY);
+    }
+
+    // 評級
+    const char* g = grade();
+    Color gcol = (std::string(g) == "SS" || g[0] == 'S') ? GOLD
+                 : (g[0] == 'A')                          ? GREEN
+                 : (g[0] == 'D')                          ? RED
+                                                          : SKYBLUE;
+    const int gfs = 160;
+    DrawText(g, cx - MeasureText(g, gfs) / 2, 220, gfs, gcol);
+
+    // 數據
+    int y = 430;
+    const int fs = 30;
+    auto row = [&](const char* label, const char* value, Color c) {
+        DrawText(label, cx - 200, y, fs, GRAY);
+        DrawText(value, cx + 60, y, fs, c);
+        y += 48;
+    };
+    row("ACCURACY", TextFormat("%.2f%%", accuracy()), RAYWHITE);
+    row("SCORE", TextFormat("%d", score_), RAYWHITE);
+    row("MAX COMBO", TextFormat("%d", maxCombo_), GOLD);
+    row("PERFECT", TextFormat("%d", perfects_), SKYBLUE);
+    row("GOOD", TextFormat("%d", goods_), GREEN);
+    row("MISS", TextFormat("%d", misses_), RED);
+
+    const char* hint = "Press ENTER to exit";
+    DrawText(hint, cx - MeasureText(hint, 24) / 2, kScreenH - 80, 24, Fade(RAYWHITE, 0.6f));
 }

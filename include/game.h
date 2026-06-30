@@ -24,6 +24,7 @@ private:
     void judgePress(int column, double songTimeMs);
     void judgeRelease(int column, double songTimeMs);
     void addJudgment(Judgment j);
+    void triggerFlash(int column, Judgment j);  // 命中聲光回饋
     Judgment judgeByError(double absErrMs) const;
 
     void draw(double songTimeMs) const;
@@ -49,6 +50,11 @@ private:
 
     double signedErrSum_ = 0.0;           // 命中音符的有號誤差和，用於校正建議
     int errSamples_ = 0;
+
+    // 命中回饋（用牆鐘計時，與遊戲邏輯時鐘分開）
+    std::array<double, 7> laneFlash_{};        // 各軌道最近一次命中的 GetTime()
+    std::array<Judgment, 7> laneFlashJudge_{}; // 該次命中的判定（決定顏色）
+    bool hitSoundQueued_ = false;              // 本幀是否要播放打擊聲
 
     int score_ = 0;
     int combo_ = 0;

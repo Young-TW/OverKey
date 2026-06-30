@@ -60,4 +60,23 @@ private:
     Texture2D tex_{};
 };
 
+// 短音效。可由檔案載入，或接管程式合成的 Sound（如 LoadSoundFromWave 的結果）。
+class SoundRes {
+public:
+    explicit SoundRes(const char* path) : snd_(LoadSound(path)) {}
+    explicit SoundRes(Sound s) : snd_(s) {}  // 接管已建立的 Sound
+    ~SoundRes() {
+        if (valid()) UnloadSound(snd_);
+    }
+    SoundRes(SoundRes&& other) noexcept : snd_(other.snd_) { other.snd_ = {}; }
+    SoundRes& operator=(SoundRes&&) = delete;
+    SoundRes(const SoundRes&) = delete;
+
+    bool valid() const { return snd_.stream.buffer != nullptr; }
+    Sound& get() { return snd_; }
+
+private:
+    Sound snd_{};
+};
+
 #endif

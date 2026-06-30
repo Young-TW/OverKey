@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <utility>
 
 #include <raylib.h>
@@ -44,6 +45,28 @@ constexpr Color kNoteColors[kCols] = {
     SKYBLUE, WHITE, SKYBLUE, GOLD, SKYBLUE, WHITE, SKYBLUE,
 };
 
+constexpr double kFlashDur = 0.18;  // 命中閃光持續秒數
+
+// 程式合成一個短促的打擊聲（正弦 blip + 起音雜訊，快速衰減），免外部素材
+Sound makeHitSound() {
+    constexpr int sr = 44100;
+    constexpr float dur = 0.05f;
+    constexpr int n = static_cast<int>(sr * dur);
+    auto* data = static_cast<short*>(std::malloc(n * sizeof(short)));
+    for (int i = 0; i < n; ++i) {
+        const float t = static_cast<float>(i) / sr;
+        const float env = std::exp(-t * 55.0f);
+        const float tone = std::sin(2.0f * PI * 880.0f * t);
+        const float noise = (static_cast<float>(std::rand()) / RAND_MAX) * 2.0f - 1.0f;
+        const float s = env * (0.6f * tone + 0.4f * noise * std::exp(-t * 180.0f));
+        data[i] = static_cast<short>(std::clamp(s, -1.0f, 1.0f) * 28000.0f);
+    }
+    const Wave wave{static_cast<unsigned>(n), static_cast<unsigned>(sr), 16, 1, data};
+    const Sound snd = LoadSoundFromWave(wave);
+    UnloadWave(wave);  // 釋放 data
+    return snd;
+}
+
 float laneX(int col) { return kOriginX + col * kLaneW; }
 
 // 給定音符時間，回傳此刻其頭部中心應在的 Y
@@ -62,6 +85,7 @@ Game::Game(Beatmap map, std::filesystem::path audioPath, Settings settings)
       pxPerMs_(kJudgeY / approachMs_),
       state_(map_.notes.size(), NoteState::Idle) {
     holding_.fill(-1);
+    laneFlash_.fill(-10.0);
     for (const ManiaNote& n : map_.notes) {
         const int last = (n.endTime > 0) ? n.endTime : n.startTime;
         songEndMs_ = std::max(songEndMs_, static_cast<double>(last));
@@ -76,6 +100,8 @@ void Game::run() {
 
     MusicRes music{audioPath_.string().c_str()};
     const bool haveMusic = music.valid();
+
+    SoundRes hitSound{makeHitSound()};
 
     const double startWall = GetTime() + kLeadInMs / 1000.0;  // 真正 t=0 的牆鐘時間
     bool musicStarted = false;
@@ -102,6 +128,11 @@ void Game::run() {
             songTimeMs += offsetMs_;  // 套用音訊偏移，渲染與判定共用同一時鐘
 
             update(songTimeMs);
+
+            if (hitSoundQueued_) {
+                PlaySound(hitSound.get());
+                hitSoundQueued_ = false;
+            }
 
             if (songTimeMs >= songEndMs_) {
                 phase_ = Phase::Result;
@@ -150,6 +181,7 @@ void Game::update(double songTimeMs) {
                     state_[i] = NoteState::Done;
                     holding_[n.column] = -1;
                     addJudgment(Judgment::Perfect);
+                    triggerFlash(n.column, Judgment::Perfect);
                 }
                 break;
             case NoteState::Done:
@@ -176,7 +208,9 @@ void Game::judgePress(int column, double songTimeMs) {
     signedErrSum_ += songTimeMs - map_.notes[best].startTime;
     ++errSamples_;
 
-    addJudgment(judgeByError(bestAbs));  // 頭部判定
+    const Judgment headJ = judgeByError(bestAbs);
+    addJudgment(headJ);  // 頭部判定
+    if (headJ != Judgment::Miss) triggerFlash(column, headJ);
     if (map_.notes[best].endTime > 0) {
         state_[best] = NoteState::Holding;  // 長押：開始按住，尾部待判
         holding_[column] = best;
@@ -197,7 +231,9 @@ void Game::judgeRelease(int column, double songTimeMs) {
     if (songTimeMs < n.endTime - kGoodMs) {
         addJudgment(Judgment::Miss);  // 提早放開
     } else {
-        addJudgment(judgeByError(err));  // 在尾端視窗內放開
+        const Judgment tailJ = judgeByError(err);  // 在尾端視窗內放開
+        addJudgment(tailJ);
+        if (tailJ != Judgment::Miss) triggerFlash(column, tailJ);
     }
 }
 
@@ -229,7 +265,13 @@ void Game::addJudgment(Judgment j) {
         case Judgment::None:
             return;
     }
+    if (j == Judgment::Perfect || j == Judgment::Good) hitSoundQueued_ = true;
     maxCombo_ = std::max(maxCombo_, combo_);
+}
+
+void Game::triggerFlash(int column, Judgment j) {
+    laneFlash_[column] = GetTime();
+    laneFlashJudge_[column] = j;
 }
 
 double Game::accuracy() const {
@@ -261,6 +303,20 @@ void Game::drawPlayfield(double songTimeMs) const {
     for (int c = 0; c <= kCols; ++c) {
         DrawLine(static_cast<int>(laneX(c)), 0, static_cast<int>(laneX(c)), kScreenH,
                  Color{30, 30, 38, 255});
+    }
+
+    // 命中閃光（判定線上的淡出光暈，依判定著色）
+    const double now = GetTime();
+    for (int c = 0; c < kCols; ++c) {
+        const double dt = now - laneFlash_[c];
+        if (dt < 0.0 || dt >= kFlashDur) continue;
+        const float a = static_cast<float>(1.0 - dt / kFlashDur);
+        const Color base = (laneFlashJudge_[c] == Judgment::Perfect) ? SKYBLUE : GREEN;
+        const int x = static_cast<int>(laneX(c));
+        // 向上漸層的光柱 + 判定線上的亮條
+        DrawRectangleGradientV(x, static_cast<int>(kJudgeY) - 160, kLaneW, 160,
+                               Fade(base, 0.0f), Fade(base, 0.35f * a));
+        DrawRectangle(x, static_cast<int>(kJudgeY) - 6, kLaneW, 12, Fade(base, 0.8f * a));
     }
 
     // 判定線

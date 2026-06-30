@@ -21,7 +21,7 @@ SongSelect::SongSelect(std::filesystem::path mapsDir) : mapsDir_(std::move(mapsD
                  mapsDir_, std::filesystem::directory_options::skip_permission_denied, ec);
              !ec && it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
             const auto& p = it->path();
-            if (p.extension() == ".osu") {
+            if (p.extension() == ".osu" && probeBeatmap(p).isMania7K()) {
                 std::filesystem::path rel = p.lexically_relative(mapsDir_);
                 std::string label = rel.replace_extension("").string();
                 entries_.push_back({p, std::move(label)});
@@ -82,7 +82,7 @@ void SongSelect::draw() const {
     DrawText("SELECT SONG", 42, 115, 24, GRAY);
 
     if (entries_.empty()) {
-        const char* msg = "maps/ 內找不到 .osu 譜面";
+        const char* msg = "找不到 mania 7K 譜面（請確認 maps 目錄路徑）";
         DrawText(msg, w / 2 - MeasureText(msg, 28) / 2, GetScreenHeight() / 2 - 14, 28, RED);
         const char* hint = "Press ESC to exit";
         DrawText(hint, w / 2 - MeasureText(hint, 22) / 2, GetScreenHeight() - 60, 22,

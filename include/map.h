@@ -22,10 +22,21 @@ struct BeatmapInfo {
     std::string title;
     std::string artist;
     std::string version;  // 難度名
+    int mode = -1;        // osu 模式：0=std 1=taiko 2=catch 3=mania
     int keyCount = 0;
     int noteCount = 0;
     int lengthMs = 0;  // 最後一個音符時間
 };
+
+// 譜面檔頭（只含篩選所需欄位）
+struct BeatmapHeader {
+    int mode = -1;
+    int keyCount = 0;
+    bool isMania7K() const { return mode == 3 && keyCount == 7; }
+};
+
+// 極輕量探測：只讀到 [HitObjects] 前就停，用於大量譜面庫的快速篩選
+BeatmapHeader probeBeatmap(const std::filesystem::path& filename);
 
 // 讀取整張 osu!mania 7K 譜面（音訊檔名、標題、音符）
 Beatmap loadBeatmap(const std::filesystem::path& filename);

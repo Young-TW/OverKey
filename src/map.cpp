@@ -115,7 +115,14 @@ BeatmapInfo loadBeatmapInfo(const std::filesystem::path& filename) {
             continue;
         }
 
-        if (section == "[Metadata]") {
+        if (section == "[General]") {
+            if (trimmed.rfind("Mode:", 0) == 0) {
+                try {
+                    info.mode = std::stoi(keyValue(trimmed));
+                } catch (...) {
+                }
+            }
+        } else if (section == "[Metadata]") {
             if (trimmed.rfind("Title:", 0) == 0) info.title = keyValue(trimmed);
             else if (trimmed.rfind("Artist:", 0) == 0) info.artist = keyValue(trimmed);
             else if (trimmed.rfind("Version:", 0) == 0) info.version = keyValue(trimmed);
@@ -142,4 +149,34 @@ BeatmapInfo loadBeatmapInfo(const std::filesystem::path& filename) {
         }
     }
     return info;
+}
+
+BeatmapHeader probeBeatmap(const std::filesystem::path& filename) {
+    BeatmapHeader h;
+    std::ifstream file(filename);
+    if (!file.is_open()) return h;
+
+    std::string line;
+    std::string section;
+    while (std::getline(file, line)) {
+        const std::string trimmed = trim(line);
+        if (trimmed.empty()) continue;
+        if (trimmed.front() == '[' && trimmed.back() == ']') {
+            section = trimmed;
+            if (section == "[HitObjects]") break;  // 不需要讀物件清單，提早結束
+            continue;
+        }
+        if (section == "[General]" && trimmed.rfind("Mode:", 0) == 0) {
+            try {
+                h.mode = std::stoi(keyValue(trimmed));
+            } catch (...) {
+            }
+        } else if (section == "[Difficulty]" && trimmed.rfind("CircleSize", 0) == 0) {
+            try {
+                h.keyCount = std::stoi(keyValue(trimmed));
+            } catch (...) {
+            }
+        }
+    }
+    return h;
 }

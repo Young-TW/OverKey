@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -276,6 +277,10 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
     bool paused = false;
     int pauseSel = 0;  // 0 Resume / 1 Retry / 2 Quit
 
+    std::array<Clock::time_point, 7> flashAt{};  // 各軌道最近命中時間
+    std::array<Judgment, 7> flashJ{};
+    constexpr double kFlashDur = 0.18;
+
     auto restartAttempt = [&] {
         if (musicStarted) {
             ResumeMusicStream(music.get());  // 若暫停中，先恢復才能正確倒回 0
@@ -375,7 +380,8 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
             session.advance(songTimeMs);
             bool anyHit = false;
             for (const auto& ev : session.drainEvents()) {
-                (void)ev;
+                flashAt[ev.lane] = frameStart;  // 命中閃光
+                flashJ[ev.lane] = ev.judgment;
                 anyHit = true;
             }
             if (anyHit) PlaySound(hit);
@@ -392,6 +398,19 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
         // ---- 渲染 ----
         canvas.clear();
         if (playing) {
+            // 命中閃光：判定線上方依判定著色、淡出的亮塊（每軌獨立）
+            for (int c = 0; c < keyCount; ++c) {
+                const double dt2 =
+                    std::chrono::duration<double>(frameStart - flashAt[c]).count();
+                if (dt2 < 0.0 || dt2 >= kFlashDur) continue;
+                const float a = static_cast<float>(1.0 - dt2 / kFlashDur);
+                const Rgb base = judgeRgb(flashJ[c]);
+                const Rgb col{static_cast<uint8_t>(18 + (base.r - 18) * a),
+                              static_cast<uint8_t>(24 + (base.g - 24) * a),
+                              static_cast<uint8_t>(30 + (base.b - 30) * a)};
+                const int cx0 = originCol + c * laneCells;
+                canvas.fillRect(cx0, judgePxY - 10, cx0 + laneCells - 1, judgePxY - 2, col);
+            }
             // 判定線（3 像素粗）
             canvas.fillRect(originCol, judgePxY - 1, originCol + playCells - 1, judgePxY + 1,
                             kWhite);

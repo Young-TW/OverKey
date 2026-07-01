@@ -123,6 +123,34 @@ std::vector<Entry> scanMaps(const fs::path& dir) {
 
 constexpr auto kFramePeriod = std::chrono::microseconds(1000000 / 1000);  // 目標 1000fps
 
+// 重繪率統計：avg / 1% low / 0.1% low（取最差幀時間換算）
+struct FpsMeter {
+    static constexpr std::size_t N = 2000;  // 取樣視窗（幀）
+    std::vector<double> s;                   // 幀時間(ms)
+    std::size_t idx = 0;
+    void push(double ms) {
+        if (s.size() < N) s.push_back(ms);
+        else { s[idx] = ms; idx = (idx + 1) % N; }
+    }
+    void stats(double& avg, double& low1, double& low01) const {
+        avg = low1 = low01 = 0;
+        if (s.empty()) return;
+        double sum = 0;
+        for (double v : s) sum += v;
+        avg = 1000.0 / (sum / s.size());
+        std::vector<double> t = s;
+        std::sort(t.begin(), t.end(), [](double a, double b) { return a > b; });  // 最差在前
+        auto worst = [&](double frac) {
+            const std::size_t k = std::max<std::size_t>(1, (std::size_t)(t.size() * frac));
+            double a = 0;
+            for (std::size_t i = 0; i < k; ++i) a += t[i];
+            return 1000.0 / (a / k);
+        };
+        low1 = worst(0.01);
+        low01 = worst(0.001);
+    }
+};
+
 constexpr int kMenuQuit = -1;
 constexpr int kMenuSettings = -2;
 
@@ -419,6 +447,10 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
     std::array<Judgment, 7> flashJ{};
     constexpr double kFlashDur = 0.18;
 
+    FpsMeter fps;
+    double fAvg = 0, fLow1 = 0, fLow01 = 0;
+    int fpsTick = 0;
+
     // 圓形音符 kitty 版（shape==2）：每軌一張圓，開場先傳輸；離開時清除
     if (settings.noteShape == 2) term.write(transmitLaneCircles(keyCount));
     auto cleanupImgs = [&] {
@@ -443,6 +475,11 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
         const double dt =
             std::chrono::duration<double, std::milli>(frameStart - prev).count();
         prev = frameStart;
+        fps.push(dt);
+        if (++fpsTick >= 20) {  // 每 20 幀更新一次顯示
+            fpsTick = 0;
+            fps.stats(fAvg, fLow1, fLow01);
+        }
 
         term.refreshSize();
         if (canvas.cols() != term.cols() || canvas.rows() != term.rows())
@@ -667,6 +704,8 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
             std::snprintf(buf, sizeof(buf), "SPEED %.1fx %.0fms", settings.scrollSpeed,
                           (term.rows() * 8) / pxPerMs);
             canvas.putText(1, 3, buf, kGray);
+            std::snprintf(buf, sizeof(buf), "FPS %.0f  1%%%.0f  .1%%%.0f", fAvg, fLow1, fLow01);
+            canvas.putText(1, 4, buf, kGray);
             if (session.lastJudgment() != Judgment::None) {
                 const char* jt = judgeName(session.lastJudgment());
                 canvas.putText(originCol + playCells / 2 - (int)std::string(jt).size() / 2,

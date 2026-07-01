@@ -143,6 +143,8 @@ BeatmapInfo loadBeatmapInfoQua(const std::filesystem::path& filename) {
             flush();
             const std::string t = trim(line);
             if (t.rfind("AudioFile:", 0) == 0) info.audioFilename = stripQuotes(keyValue(t));
+            else if (t.rfind("BackgroundFile:", 0) == 0)
+                info.backgroundFilename = stripQuotes(keyValue(t));
             else if (t.rfind("Title:", 0) == 0) info.title = stripQuotes(keyValue(t));
             else if (t.rfind("Artist:", 0) == 0) info.artist = stripQuotes(keyValue(t));
             else if (t.rfind("DifficultyName:", 0) == 0) info.version = stripQuotes(keyValue(t));
@@ -304,6 +306,14 @@ BeatmapInfo loadBeatmapInfo(const std::filesystem::path& filename) {
                     info.keyCount = std::stoi(keyValue(trimmed));
                 } catch (...) {
                 }
+            }
+        } else if (section == "[Events]") {
+            // 背景事件：0,0,"bg.jpg"[,x,y]
+            if (info.backgroundFilename.empty() && trimmed.rfind("0,0,", 0) == 0) {
+                const auto q1 = trimmed.find('"');
+                const auto q2 = trimmed.find('"', q1 + 1);
+                if (q1 != std::string::npos && q2 != std::string::npos)
+                    info.backgroundFilename = trimmed.substr(q1 + 1, q2 - q1 - 1);
             }
         } else if (section == "[HitObjects]") {
             // 只取時間欄位，統計數量與最後時間，不解析完整物件

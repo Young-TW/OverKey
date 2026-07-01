@@ -63,6 +63,8 @@ MenuResult SongSelect::run(Viewport& vp, float musicVolume, const ScoreBook& sco
     std::filesystem::path previewPath;      // 正在播放的音訊檔（空＝無）
     double selChangedAt = GetTime();        // 上次切換選取的時間（防抖）
     double previewStart = 0.0;              // 試聽循環的起點（秒）
+    std::optional<TextureRes> cover;        // 目前封面圖
+    std::filesystem::path coverPath;        // 已載入的封面檔（空＝無）
     int lastSel = selected_;
 
     while (!WindowShouldClose()) {
@@ -121,7 +123,38 @@ MenuResult SongSelect::run(Viewport& vp, float musicVolume, const ScoreBook& sco
             }
         }
 
+        // 封面圖：停穩後只有「檔案不同」才重載
+        if (!entries_.empty() && GetTime() - selChangedAt > kPreviewDebounce) {
+            const Entry& e = entries_[selected_];
+            std::filesystem::path desired;
+            if (e.info && !e.info->backgroundFilename.empty())
+                desired = e.path.parent_path() / e.info->backgroundFilename;
+            if (desired != coverPath) {
+                cover.reset();
+                coverPath = desired;
+                std::error_code ec;
+                if (!desired.empty() && std::filesystem::exists(desired, ec)) {
+                    cover.emplace(desired.string().c_str());
+                    if (!cover->valid()) cover.reset();
+                }
+                if (!cover) coverPath.clear();
+            }
+        }
+
         vp.begin(Color{18, 18, 24, 255});
+        if (cover && cover->valid()) {  // 詳情面板背景（cover-fit 裁切 + 變暗）
+            const Texture2D& tex = cover->get();
+            const Rectangle dst{static_cast<float>(kListW + 20),
+                                static_cast<float>(kListTop - 10),
+                                static_cast<float>(kVirtualW - (kListW + 20) - 10),
+                                static_cast<float>(kVirtualH - kListBottom - (kListTop - 10))};
+            const float sw = static_cast<float>(tex.width), sh = static_cast<float>(tex.height);
+            const float sc = std::max(dst.width / sw, dst.height / sh);
+            const float cw = dst.width / sc, ch = dst.height / sc;
+            const Rectangle src{(sw - cw) / 2, (sh - ch) / 2, cw, ch};
+            DrawTexturePro(tex, src, dst, {0, 0}, 0, WHITE);
+            DrawRectangleRec(dst, Fade(BLACK, 0.6f));
+        }
         draw();
         vp.end();
     }

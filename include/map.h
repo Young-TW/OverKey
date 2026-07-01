@@ -23,8 +23,9 @@ struct BeatmapInfo {
     std::string title;
     std::string artist;
     std::string version;        // 難度名
-    std::string audioFilename;  // [General] AudioFilename
-    int mode = -1;              // osu 模式：0=std 1=taiko 2=catch 3=mania
+    std::string audioFilename;       // [General] AudioFilename
+    std::string backgroundFilename;  // 背景圖（osu [Events] / Quaver BackgroundFile）
+    int mode = -1;                   // osu 模式：0=std 1=taiko 2=catch 3=mania
     int keyCount = 0;
     int noteCount = 0;
     int lengthMs = 0;        // 最後一個音符時間

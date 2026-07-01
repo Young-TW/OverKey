@@ -124,6 +124,50 @@ constexpr auto kFramePeriod = std::chrono::microseconds(1000000 / 1000);  // 目
 constexpr int kMenuQuit = -1;
 constexpr int kMenuSettings = -2;
 
+constexpr const char* kKittyDeleteAll = "\x1b_Ga=d,d=A,q=2\x1b\\";  // 刪除所有 kitty 圖片
+
+// 用 kitty graphics protocol 顯示封面：解碼 → PNG → base64 → APC 分塊傳輸並顯示。
+// col/row 為 1-based 游標位置；boxCols 為顯示寬（格），outRows 回傳實際高（格，保比例）。
+// 回傳要寫入終端機的跳脫序列；失敗回空字串。
+std::string buildKittyCover(const fs::path& path, int col, int row, int boxCols, int boxRowsMax,
+                            int& outRows) {
+    Image img = LoadImage(path.string().c_str());
+    if (img.data == nullptr) return "";
+    if (img.width > 480) ImageResize(&img, 480, img.height * 480 / img.width);
+    const double aspect = static_cast<double>(img.width) / std::max(1, img.height);
+    // 格約 1:2（寬:高）→ 保比例的列數
+    outRows = std::clamp((int)std::lround(boxCols * 0.5 / aspect), 1, boxRowsMax);
+
+    int sz = 0;
+    unsigned char* png = ExportImageToMemory(img, ".png", &sz);
+    std::string b64 = (png && sz > 0) ? tui::base64Encode(png, static_cast<size_t>(sz)) : "";
+    if (png) MemFree(png);
+    UnloadImage(img);
+    if (b64.empty()) return "";
+
+    std::string s = kKittyDeleteAll;
+    char cur[32];
+    std::snprintf(cur, sizeof(cur), "\x1b[%d;%dH", row, col);
+    s += cur;
+
+    constexpr size_t CH = 4000;
+    for (size_t i = 0; i < b64.size(); i += CH) {
+        const bool firstChunk = (i == 0);
+        const bool lastChunk = (i + CH >= b64.size());
+        s += "\x1b_G";
+        if (firstChunk) {
+            char hdr[64];
+            std::snprintf(hdr, sizeof(hdr), "a=T,f=100,t=d,q=2,c=%d,r=%d,", boxCols, outRows);
+            s += hdr;
+        }
+        s += lastChunk ? "m=0" : "m=1";
+        s += ";";
+        s += b64.substr(i, CH);
+        s += "\x1b\\";
+    }
+    return s;
+}
+
 // 回傳 kMenuQuit=離開、kMenuSettings=設定，否則為選擇的 index
 int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float musicVolume,
             const ScoreBook& scores) {
@@ -138,6 +182,17 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
     double previewStart = 0.0;
     int lastSel = selected;
 
+    fs::path coverPath;   // 已顯示的封面檔（空＝無）
+    int coverRows = 0;    // 封面佔用列數
+    const int coverCol = term.cols() / 2 + 2;  // 面板起始欄（1-based）
+    const int coverRow = 4;                     // 面板起始列（1-based）
+
+    // 離開選單前刪除 kitty 圖片，避免殘留到遊玩畫面
+    auto leave = [&](int r) {
+        if (!coverPath.empty()) term.write(kKittyDeleteAll);
+        return r;
+    };
+
     while (true) {
         term.refreshSize();
         if (canvas.cols() != term.cols() || canvas.rows() != term.rows())
@@ -145,14 +200,14 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
 
         for (const KeyEvent& e : term.poll()) {
             if (e.type != KeyEvent::Press) continue;
-            if (e.code == 27 || e.code == 'q' || e.code == 3) return kMenuQuit;
-            if (e.code == 9) return kMenuSettings;  // Tab
+            if (e.code == 27 || e.code == 'q' || e.code == 3) return leave(kMenuQuit);
+            if (e.code == 9) return leave(kMenuSettings);  // Tab
             if (entries.empty()) continue;
             if (e.code == 'j' || e.code == kKeyDown)
                 selected = (selected + 1) % entries.size();
             if (e.code == 'k' || e.code == kKeyUp)
                 selected = (selected + entries.size() - 1) % entries.size();
-            if (e.code == 13 || e.code == 32) return selected;
+            if (e.code == 13 || e.code == 32) return leave(selected);
         }
         if (selected != lastSel) {  // 換選取：重啟防抖（先不停試聽）
             lastSel = selected;
@@ -195,6 +250,40 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
                 SeekMusicStream(preview->get(), (float)previewStart);
         }
 
+        // 封面（kitty graphics）：停穩後只有「檔案不同」才重傳
+        if (!entries.empty() && info &&
+            std::chrono::duration<double>(Clock::now() - selChangedAt).count() > 0.25) {
+            fs::path desired;
+            if (!info->backgroundFilename.empty()) {
+                const fs::path bg = entries[selected].path.parent_path() / info->backgroundFilename;
+                std::error_code ec;
+                if (fs::exists(bg, ec)) desired = bg;
+            }
+            if (desired != coverPath) {
+                const int boxCols = std::max(4, term.cols() - coverCol - 1);
+                const int boxRowsMax = std::max(3, (term.rows() - coverRow) / 2);
+                int rows = 0;
+                std::string seq = desired.empty()
+                                      ? std::string(kKittyDeleteAll)
+                                      : buildKittyCover(desired, coverCol, coverRow, boxCols,
+                                                        boxRowsMax, rows);
+                if (!desired.empty() && seq.empty()) {  // 載入失敗
+                    desired.clear();
+                    seq = kKittyDeleteAll;
+                    rows = 0;
+                }
+                term.write(seq);
+                coverPath = desired;
+                coverRows = rows;
+                if (coverRows > 0)
+                    canvas.setReserved(coverCol - 1, coverRow - 1, coverCol - 1 + boxCols - 1,
+                                       coverRow - 1 + coverRows - 1);
+                else
+                    canvas.setReserved(0, 0, -1, -1);
+                canvas.forceRedraw();  // 保留區變動 → 全畫面重畫
+            }
+        }
+
         canvas.clear();
         canvas.putText(2, 1, "OVERKEY  (TUI)", kGold);
         canvas.putText(2, 2, "up/down move   enter play   tab settings   q quit", kGray);
@@ -216,7 +305,8 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
             }
             if (info) {
                 const int px = term.cols() / 2 + 2;
-                int y = 4;
+                // 有封面時文字排在封面下方
+                int y = coverRows > 0 ? (coverRow - 1 + coverRows + 1) : 4;
                 canvas.putText(px, y++, ellipsize(info->title, term.cols() - px - 1), kWhite);
                 canvas.putText(px, y++, ellipsize(info->artist, term.cols() - px - 1), kGray);
                 canvas.putText(px, y++, ellipsize(info->version, term.cols() - px - 1), kGold);

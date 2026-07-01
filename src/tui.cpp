@@ -193,6 +193,17 @@ void PixelCanvas::fillRect(int cx0, int py0, int cx1, int py1, Rgb color) {
         for (int x = cx0; x <= cx1; ++x) setPixel(x, y, color);
 }
 
+void PixelCanvas::setReserved(int cx0, int cy0, int cx1, int cy1) {
+    rcx0_ = cx0;
+    rcy0_ = cy0;
+    rcx1_ = cx1;
+    rcy1_ = cy1;
+}
+
+void PixelCanvas::forceRedraw() {
+    std::fill(prev_.begin(), prev_.end(), Cell{0xFFFFFFFFu, 1, 1, 1, 1, 1, 1});
+}
+
 void PixelCanvas::putText(int cx, int cy, const std::string& s, Rgb color) {
     if (cy < 0 || cy >= rows_) return;
     int x = cx;
@@ -217,6 +228,8 @@ void PixelCanvas::flush(std::string& out) {
 
     for (int y = 0; y < rows_; ++y) {
         for (int x = 0; x < cols_; ++x) {
+            // 保留區（kitty 圖片）：不輸出，避免覆蓋圖片
+            if (x >= rcx0_ && x <= rcx1_ && y >= rcy0_ && y <= rcy1_) continue;
             const size_t cidx = static_cast<size_t>(y) * cols_ + x;
             Cell cell;
             if (textCp_[cidx] != 0) {  // 文字覆蓋整格
@@ -273,6 +286,23 @@ void PixelCanvas::flush(std::string& out) {
         }
     }
     out += "\x1b[0m\x1b[?2026l";  // 重置色彩、結束同步輸出
+}
+
+std::string base64Encode(const unsigned char* data, std::size_t n) {
+    static const char* tbl =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    out.reserve((n + 2) / 3 * 4);
+    for (std::size_t i = 0; i < n; i += 3) {
+        const unsigned b0 = data[i];
+        const unsigned b1 = (i + 1 < n) ? data[i + 1] : 0;
+        const unsigned b2 = (i + 2 < n) ? data[i + 2] : 0;
+        out += tbl[b0 >> 2];
+        out += tbl[((b0 & 0x03) << 4) | (b1 >> 4)];
+        out += (i + 1 < n) ? tbl[((b1 & 0x0F) << 2) | (b2 >> 6)] : '=';
+        out += (i + 2 < n) ? tbl[b2 & 0x3F] : '=';
+    }
+    return out;
 }
 
 }  // namespace tui

@@ -71,6 +71,11 @@ public:
     void fillRect(int cx0, int py0, int cx1, int py1, Rgb color);  // 含端點
     void putText(int cx, int cy, const std::string& s, Rgb color);  // cy 為格列
 
+    // 保留區（格座標，含端點）：flush 不輸出此範圍，供 kitty 圖片顯示不被覆蓋。
+    // 傳入 cx1<cx0 代表清除保留區。
+    void setReserved(int cx0, int cy0, int cx1, int cy1);
+    void forceRedraw();  // 下一次 flush 全部重畫（保留區變動時用）
+
     void flush(std::string& out);  // 產生 diff 輸出並更新 prev
 
 private:
@@ -87,7 +92,11 @@ private:
     std::vector<uint32_t> textCp_;  // 每格文字 codepoint（0 = 無）
     std::vector<Rgb> textColor_;
     std::vector<Cell> prev_;        // 上一幀，用於 diff
+    int rcx0_ = 0, rcy0_ = 0, rcx1_ = -1, rcy1_ = -1;  // 保留區（cx1<cx0＝無）
 };
+
+// PNG 等二進位轉 base64（kitty graphics 傳輸用）
+std::string base64Encode(const unsigned char* data, std::size_t n);
 
 }  // namespace tui
 

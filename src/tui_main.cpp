@@ -547,16 +547,61 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
                     holding ? judgePxY
                             : judgePxY - (int)std::lround((n.startTime - songTimeMs) * pxPerMs);
                 const Rgb nc = laneColor(n.column, keyCount);
-                if (n.endTime > 0) {  // 長押身體
+
+                // 抗鋸齒圓帽：以覆蓋率決定每格亮度（螢幕格約 1:2，垂直換算 ×2）
+                // half: 0 整圓、1 只畫下半（頭）、2 只畫上半（尾）——長押不畫伸進長條那半
+                auto circleCap = [&](int centerPx, int half) {
+                    const double cxCell = cx0 + laneCells / 2.0;   // 圓心欄（格）
+                    const double cyCell = centerPx / 8.0;          // 圓心列（格）
+                    const double R = laneCells / 2.0;              // 半徑（寬度單位）
+                    const double vrad = R / 2.0 + 1;               // 垂直半徑（格列）
+                    int y0 = std::max(0, (int)(cyCell - vrad));
+                    int y1 = std::min(term.rows() - 1, (int)(cyCell + vrad));
+                    const int mid = centerPx / 8;
+                    if (half == 1) y0 = std::max(y0, mid);  // 下半
+                    if (half == 2) y1 = std::min(y1, mid);  // 上半
+                    constexpr int S = 4;
+                    for (int cy = y0; cy <= y1; ++cy) {
+                        for (int dx = 0; dx < laneCells; ++dx) {
+                            const int col = cx0 + dx;
+                            int inside = 0;
+                            for (int i = 0; i < S; ++i)
+                                for (int j = 0; j < S; ++j) {
+                                    const double x = col + (i + 0.5) / S;
+                                    const double yc = cy + (j + 0.5) / S;
+                                    const double ex = x - cxCell;
+                                    const double ey = (yc - cyCell) * 2.0;  // 格高:寬 ≈ 2:1
+                                    if (ex * ex + ey * ey <= R * R) ++inside;
+                                }
+                            const double cov = inside / static_cast<double>(S * S);
+                            if (cov <= 0.02) continue;
+                            const Rgb c{static_cast<uint8_t>(18 + (nc.r - 18) * cov),
+                                        static_cast<uint8_t>(24 + (nc.g - 24) * cov),
+                                        static_cast<uint8_t>(30 + (nc.b - 30) * cov)};
+                            for (int p = 0; p < 8; ++p) canvas.setPixel(col, cy * 8 + p, c);
+                        }
+                    }
+                };
+
+                if (n.endTime > 0) {  // 長押身體 + 尾端圓帽
                     const int tailY =
                         judgePxY - (int)std::lround((n.endTime - songTimeMs) * pxPerMs);
                     canvas.fillRect(cx0, std::min(headY, tailY), cx1, std::max(headY, tailY),
                                     nc);
+                    // 尾端（螢幕上方）只畫上半圓
+                    if (settings.roundNotes && tailY > -32 && tailY < term.rows() * 8 + 32)
+                        circleCap(tailY, 2);
                 }
                 if (headY >= 0 && headY <= judgePxY + 4) {
-                    // TUI 基準較 GUI 薄，故基準厚度取較大值（每格 8 像素）
-                    const int th = std::clamp((int)std::lround(10 * settings.noteScale), 3, 64);
-                    canvas.fillRect(cx0, headY - (th - 2), cx1, headY + 1, nc);
+                    if (settings.roundNotes) {
+                        // 長押頭（螢幕下方）只畫下半圓；點音符畫整圓
+                        circleCap(headY, n.endTime > 0 ? 1 : 0);
+                    } else {
+                        // TUI 基準較 GUI 薄，故基準厚度取較大值（每格 8 像素）
+                        const int th =
+                            std::clamp((int)std::lround(10 * settings.noteScale), 3, 64);
+                        canvas.fillRect(cx0, headY - (th - 2), cx1, headY + 1, nc);
+                    }
                 }
             }
 
@@ -745,7 +790,7 @@ void runSettings(Terminal& term, Settings& settings) {
         row(3, "Effect volume", buf, y++);
         std::snprintf(buf, sizeof(buf), "%.1fx", settings.noteScale);
         row(4, "Note height", buf, y++);
-        row(5, "Note shape (GUI)", settings.roundNotes ? "Round" : "Bar", y++);
+        row(5, "Note shape", settings.roundNotes ? "Round" : "Bar", y++);
         ++y;
         canvas.putText(4, y++, "7K KEYBINDS", kGray);
         for (int i = 0; i < 7; ++i) {

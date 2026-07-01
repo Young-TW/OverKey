@@ -49,8 +49,10 @@ Settings loadSettings(const std::filesystem::path& file) {
                 s.effectVolume = std::stof(val);
             } else if (key == "noteScale") {
                 s.noteScale = std::stof(val);
-            } else if (key == "roundNotes") {
-                s.roundNotes = (std::stoi(val) != 0);
+            } else if (key == "noteShape") {
+                s.noteShape = std::stoi(val);
+            } else if (key == "roundNotes") {  // 舊版相容
+                s.noteShape = (std::stoi(val) != 0) ? 1 : 0;
             } else if (key == "keys") {
                 std::stringstream ss(val);
                 std::string tok;
@@ -81,7 +83,7 @@ void saveSettings(const Settings& s, const std::filesystem::path& file) {
     out << "musicVolume=" << s.musicVolume << "\n";
     out << "effectVolume=" << s.effectVolume << "\n";
     out << "noteScale=" << s.noteScale << "\n";
-    out << "roundNotes=" << (s.roundNotes ? 1 : 0) << "\n";
+    out << "noteShape=" << s.noteShape << "\n";
     out << "keys=";
     for (int i = 0; i < 7; ++i) out << (i ? "," : "") << s.keys[i];
     out << "\n";
@@ -132,7 +134,7 @@ void SettingsScreen::run(Viewport& vp) {
             } else if (selected_ == 4 && dir != 0) {
                 s_.noteScale = std::clamp(s_.noteScale + dir * 0.1f, 0.5f, 3.0f);
             } else if (selected_ == 5 && dir != 0) {
-                s_.roundNotes = !s_.roundNotes;
+                s_.noteShape = (s_.noteShape + (dir > 0 ? 1 : 2)) % 3;  // Bar/Round/Round-kitty
             } else if (selected_ >= kNumericFields &&
                        (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER))) {
                 rebinding_ = selected_;  // 進入重新綁定
@@ -173,7 +175,8 @@ void SettingsScreen::draw() const {
     y += 42;
     drawRow(4, "Note height", TextFormat("%.1fx", s_.noteScale), y);
     y += 42;
-    drawRow(5, "Note shape", s_.roundNotes ? "Round" : "Bar", y);
+    const char* shapeName[] = {"Bar", "Round", "Round (kitty*)"};
+    drawRow(5, "Note shape", shapeName[std::clamp(s_.noteShape, 0, 2)], y);
     y += 50;
 
     DrawText("7K KEYBINDS", 56, y, 20, Fade(RAYWHITE, 0.55f));

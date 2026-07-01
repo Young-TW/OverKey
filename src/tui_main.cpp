@@ -127,6 +127,38 @@ constexpr int kMenuQuit = -1;
 constexpr int kMenuSettings = -2;
 
 constexpr const char* kKittyDeleteAll = "\x1b_Ga=d,d=A,q=2\x1b\\";  // 刪除所有 kitty 圖片
+constexpr const char* kKittyClearPlacements =
+    "\x1b_Ga=d,d=a,q=2\x1b\\";  // 只刪放置、保留圖片資料
+
+// 為每個軌道傳輸一張圓形 PNG（透明底），image id = lane+1；只傳不顯示（a=t）。
+std::string transmitLaneCircles(int keyCount) {
+    std::string s;
+    for (int c = 0; c < keyCount; ++c) {
+        const Rgb lc = laneColor(c, keyCount);
+        Image im = GenImageColor(64, 64, Color{0, 0, 0, 0});
+        ImageDrawCircle(&im, 32, 32, 31, Color{lc.r, lc.g, lc.b, 255});
+        int sz = 0;
+        unsigned char* png = ExportImageToMemory(im, ".png", &sz);
+        std::string b64 = (png && sz > 0) ? tui::base64Encode(png, (size_t)sz) : "";
+        if (png) MemFree(png);
+        UnloadImage(im);
+        constexpr size_t CH = 4000;
+        for (size_t i = 0; i < b64.size(); i += CH) {
+            const bool first = (i == 0), last = (i + CH >= b64.size());
+            s += "\x1b_G";
+            if (first) {
+                char h[48];
+                std::snprintf(h, sizeof(h), "a=t,f=100,t=d,i=%d,q=2,", c + 1);
+                s += h;
+            }
+            s += last ? "m=0" : "m=1";
+            s += ";";
+            s += b64.substr(i, CH);
+            s += "\x1b\\";
+        }
+    }
+    return s;
+}
 
 // 用 kitty graphics protocol 顯示封面：解碼 → PNG → base64 → APC 分塊傳輸並顯示。
 // col/row 為 1-based 游標位置；boxCols 為顯示寬（格），outRows 回傳實際高（格，保比例）。
@@ -159,7 +191,8 @@ std::string buildKittyCover(const fs::path& path, int col, int row, int boxCols,
         s += "\x1b_G";
         if (firstChunk) {
             char hdr[64];
-            std::snprintf(hdr, sizeof(hdr), "a=T,f=100,t=d,q=2,c=%d,r=%d,", boxCols, outRows);
+            std::snprintf(hdr, sizeof(hdr), "a=T,f=100,t=d,C=1,q=2,c=%d,r=%d,", boxCols,
+                          outRows);
             s += hdr;
         }
         s += lastChunk ? "m=0" : "m=1";
@@ -386,6 +419,12 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
     std::array<Judgment, 7> flashJ{};
     constexpr double kFlashDur = 0.18;
 
+    // 圓形音符 kitty 版（shape==2）：每軌一張圓，開場先傳輸；離開時清除
+    if (settings.noteShape == 2) term.write(transmitLaneCircles(keyCount));
+    auto cleanupImgs = [&] {
+        if (settings.noteShape == 2) term.write(kKittyDeleteAll);
+    };
+
     auto restartAttempt = [&] {
         if (musicStarted) {
             ResumeMusicStream(music.get());  // 若暫停中，先恢復才能正確倒回 0
@@ -422,6 +461,7 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
             const bool press = (e.type == KeyEvent::Press);
             if (press && e.code == 3) {  // Ctrl-C 強制回選單
                 if (musicStarted) StopMusicStream(music.get());
+                cleanupImgs();
                 return;
             }
             if (press && (e.code == '`' || e.code == '~')) {  // 快速重試（任何狀態）
@@ -452,6 +492,7 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
                         restartAttempt();
                     } else {  // Quit
                         if (musicStarted) StopMusicStream(music.get());
+                        cleanupImgs();
                         return;
                     }
                 }
@@ -483,6 +524,7 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
                 if (press) session.press(lane, songTimeMs);
                 else if (e.type == KeyEvent::Release) session.release(lane, songTimeMs);
             } else if (press && (e.code == 13 || e.code == 32 || e.code == 27)) {
+                cleanupImgs();
                 return;  // 結算畫面 → 回選單
             }
         }
@@ -518,6 +560,7 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
 
         // ---- 渲染 ----
         canvas.clear();
+        std::string imgOut;  // 本幀圓形音符的 kitty 放置序列
         if (playing) {
             // 命中閃光：判定線上方依判定著色、淡出的亮塊（每軌獨立）
             for (int c = 0; c < keyCount; ++c) {
@@ -547,55 +590,50 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
                     holding ? judgePxY
                             : judgePxY - (int)std::lround((n.startTime - songTimeMs) * pxPerMs);
                 const Rgb nc = laneColor(n.column, keyCount);
+                const int shape = settings.noteShape;
 
-                // 抗鋸齒圓帽：以覆蓋率決定每格亮度（螢幕格約 1:2，垂直換算 ×2）
-                // half: 0 整圓、1 只畫下半（頭）、2 只畫上半（尾）——長押不畫伸進長條那半
+                // Round 1（八分塊）：逐欄依圓方程式算高度，部分格由八分塊平滑；不畫伸進長條那半
                 auto circleCap = [&](int centerPx, int half) {
-                    const double cxCell = cx0 + laneCells / 2.0;   // 圓心欄（格）
-                    const double cyCell = centerPx / 8.0;          // 圓心列（格）
-                    const double R = laneCells / 2.0;              // 半徑（寬度單位）
-                    const double vrad = R / 2.0 + 1;               // 垂直半徑（格列）
-                    int y0 = std::max(0, (int)(cyCell - vrad));
-                    int y1 = std::min(term.rows() - 1, (int)(cyCell + vrad));
-                    const int mid = centerPx / 8;
-                    if (half == 1) y0 = std::max(y0, mid);  // 下半
-                    if (half == 2) y1 = std::min(y1, mid);  // 上半
-                    constexpr int S = 4;
-                    for (int cy = y0; cy <= y1; ++cy) {
-                        for (int dx = 0; dx < laneCells; ++dx) {
-                            const int col = cx0 + dx;
-                            int inside = 0;
-                            for (int i = 0; i < S; ++i)
-                                for (int j = 0; j < S; ++j) {
-                                    const double x = col + (i + 0.5) / S;
-                                    const double yc = cy + (j + 0.5) / S;
-                                    const double ex = x - cxCell;
-                                    const double ey = (yc - cyCell) * 2.0;  // 格高:寬 ≈ 2:1
-                                    if (ex * ex + ey * ey <= R * R) ++inside;
-                                }
-                            const double cov = inside / static_cast<double>(S * S);
-                            if (cov <= 0.02) continue;
-                            const Rgb c{static_cast<uint8_t>(18 + (nc.r - 18) * cov),
-                                        static_cast<uint8_t>(24 + (nc.g - 24) * cov),
-                                        static_cast<uint8_t>(30 + (nc.b - 30) * cov)};
-                            for (int p = 0; p < 8; ++p) canvas.setPixel(col, cy * 8 + p, c);
-                        }
+                    const double R = laneCells / 2.0;
+                    for (int dx = 0; dx < laneCells; ++dx) {
+                        const double ex = (dx + 0.5) - R;
+                        if (std::abs(ex) > R) continue;
+                        const int halfPx = (int)std::lround(std::sqrt(R * R - ex * ex) * 4.0);
+                        int top = centerPx - halfPx, bot = centerPx + halfPx;
+                        if (half == 1) top = centerPx;  // 下半
+                        if (half == 2) bot = centerPx;  // 上半
+                        canvas.fillRect(cx0 + dx, top, cx0 + dx, bot, nc);
                     }
                 };
+                // Round 2（kitty 圖片，實驗性）：placement id 每顆唯一
+                auto place = [&](int centerPx, int placementId) {
+                    const int r = std::max(1, laneCells / 2);
+                    const int rowTop = centerPx / 8 - r / 2;
+                    if (rowTop + r <= 0 || rowTop >= term.rows()) return;
+                    char b[112];
+                    std::snprintf(b, sizeof(b),
+                                  "\x1b[%d;%dH\x1b_Ga=p,i=%d,p=%d,c=%d,r=%d,C=1,q=2\x1b\\",
+                                  rowTop + 1, originCol + n.column * laneCells + 1, n.column + 1,
+                                  placementId, laneCells, r);
+                    imgOut += b;
+                };
+                const int pid = static_cast<int>(i) + 1;
 
-                if (n.endTime > 0) {  // 長押身體 + 尾端圓帽
+                if (n.endTime > 0) {  // 長押身體（長條）+ 尾端圓
                     const int tailY =
                         judgePxY - (int)std::lround((n.endTime - songTimeMs) * pxPerMs);
                     canvas.fillRect(cx0, std::min(headY, tailY), cx1, std::max(headY, tailY),
                                     nc);
-                    // 尾端（螢幕上方）只畫上半圓
-                    if (settings.roundNotes && tailY > -32 && tailY < term.rows() * 8 + 32)
+                    if (shape == 1 && tailY > -64 && tailY < term.rows() * 8 + 64)
                         circleCap(tailY, 2);
+                    else if (shape == 2)
+                        place(tailY, pid + 1000000);
                 }
                 if (headY >= 0 && headY <= judgePxY + 4) {
-                    if (settings.roundNotes) {
-                        // 長押頭（螢幕下方）只畫下半圓；點音符畫整圓
+                    if (shape == 1) {
                         circleCap(headY, n.endTime > 0 ? 1 : 0);
+                    } else if (shape == 2) {
+                        place(headY, pid);
                     } else {
                         // TUI 基準較 GUI 薄，故基準厚度取較大值（每格 8 像素）
                         const int th =
@@ -696,6 +734,12 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
         canvas.flush(out);
         term.write(out);
 
+        // 圓形音符 kitty 版：先清掉上一幀的放置，再放本幀（結算畫面則清空不放）
+        if (settings.noteShape == 2) {
+            term.write(kKittyClearPlacements);
+            if (playing) term.write(imgOut);
+        }
+
         // 穩定步調：睡到固定節奏的下一幀（落後則重設，避免雪球）
         std::this_thread::sleep_until(nextFrame);
         nextFrame += kFramePeriod;
@@ -765,7 +809,7 @@ void runSettings(Terminal& term, Settings& settings) {
             else if (selected == 4 && dir)
                 settings.noteScale = std::clamp(settings.noteScale + dir * 0.1f, 0.5f, 3.0f);
             else if (selected == 5 && dir)
-                settings.roundNotes = !settings.roundNotes;
+                settings.noteShape = (settings.noteShape + (dir > 0 ? 1 : 2)) % 3;
             else if (selected >= k7kBase && (e.code == 13 || e.code == 32))
                 rebinding = selected;
         }
@@ -790,7 +834,8 @@ void runSettings(Terminal& term, Settings& settings) {
         row(3, "Effect volume", buf, y++);
         std::snprintf(buf, sizeof(buf), "%.1fx", settings.noteScale);
         row(4, "Note height", buf, y++);
-        row(5, "Note shape", settings.roundNotes ? "Round" : "Bar", y++);
+        const char* shapeName[] = {"Bar", "Round", "Round (kitty*)"};
+        row(5, "Note shape", shapeName[std::clamp(settings.noteShape, 0, 2)], y++);
         ++y;
         canvas.putText(4, y++, "7K KEYBINDS", kGray);
         for (int i = 0; i < 7; ++i) {

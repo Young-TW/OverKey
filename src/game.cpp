@@ -296,7 +296,7 @@ void Game::drawPlayfield(double songTimeMs) const {
             DrawRectangleRounded({x, top - noteH / 2, w, h}, 0.4f, 4,
                                  Fade(nc, holding ? 0.85f : 0.55f));
         }
-        if (settings_.roundNotes) {  // 正圓音符：直徑固定 = 軌道寬（不受厚度影響）
+        if (settings_.noteShape >= 1) {  // 正圓音符：直徑固定 = 軌道寬（不受厚度影響）
             DrawCircle(static_cast<int>(x + w / 2), static_cast<int>(headY), w / 2, nc);
         } else {
             DrawRectangleRounded({x, headY - noteH / 2, w, noteH}, 0.4f, 4, nc);

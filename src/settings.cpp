@@ -47,6 +47,8 @@ Settings loadSettings(const std::filesystem::path& file) {
                 s.musicVolume = std::stof(val);
             } else if (key == "effectVolume") {
                 s.effectVolume = std::stof(val);
+            } else if (key == "noteScale") {
+                s.noteScale = std::stof(val);
             } else if (key == "keys") {
                 std::stringstream ss(val);
                 std::string tok;
@@ -76,6 +78,7 @@ void saveSettings(const Settings& s, const std::filesystem::path& file) {
     out << "scrollSpeed=" << s.scrollSpeed << "\n";
     out << "musicVolume=" << s.musicVolume << "\n";
     out << "effectVolume=" << s.effectVolume << "\n";
+    out << "noteScale=" << s.noteScale << "\n";
     out << "keys=";
     for (int i = 0; i < 7; ++i) out << (i ? "," : "") << s.keys[i];
     out << "\n";
@@ -86,10 +89,10 @@ void saveSettings(const Settings& s, const std::filesystem::path& file) {
 
 // 欄位配置：0-3 數值，4-10 為 7K 鍵位，11-14 為 4K 鍵位
 namespace {
-constexpr int kNumericFields = 4;
-constexpr int k7kBase = kNumericFields;       // 4
-constexpr int k4kBase = kNumericFields + 7;   // 11
-constexpr int kTotalFields = kNumericFields + 7 + 4;  // 15
+constexpr int kNumericFields = 5;
+constexpr int k7kBase = kNumericFields;       // 5
+constexpr int k4kBase = kNumericFields + 7;   // 12
+constexpr int kTotalFields = kNumericFields + 7 + 4;  // 16
 
 int* keyForField(Settings& s, int field) {
     if (field >= k7kBase && field < k4kBase) return &s.keys[field - k7kBase];
@@ -123,6 +126,8 @@ void SettingsScreen::run(Viewport& vp) {
                 s_.musicVolume = std::clamp(s_.musicVolume + dir * 0.05f, 0.0f, 1.0f);
             } else if (selected_ == 3 && dir != 0) {
                 s_.effectVolume = std::clamp(s_.effectVolume + dir * 0.05f, 0.0f, 1.0f);
+            } else if (selected_ == 4 && dir != 0) {
+                s_.noteScale = std::clamp(s_.noteScale + dir * 0.1f, 0.5f, 3.0f);
             } else if (selected_ >= kNumericFields &&
                        (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER))) {
                 rebinding_ = selected_;  // 進入重新綁定
@@ -160,6 +165,8 @@ void SettingsScreen::draw() const {
     y += 42;
     drawRow(3, "Effect volume", TextFormat("%d%%", static_cast<int>(s_.effectVolume * 100)),
             y);
+    y += 42;
+    drawRow(4, "Note height", TextFormat("%.1fx", s_.noteScale), y);
     y += 50;
 
     DrawText("7K KEYBINDS", 56, y, 20, Fade(RAYWHITE, 0.55f));

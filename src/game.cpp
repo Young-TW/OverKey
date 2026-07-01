@@ -19,7 +19,7 @@ constexpr int kLaneW = 80;
 constexpr int kScreenW = 920;                      // = kVirtualW
 constexpr int kScreenH = 920;                      // = kVirtualH
 constexpr float kJudgeY = kScreenH - 140.0f;       // 判定線 Y
-constexpr float kNoteH = 22.0f;
+constexpr float kBaseNoteH = 22.0f;  // 音符基準厚度（乘上 settings.noteScale）
 
 constexpr double kBaseApproachMs = 550.0;          // scrollSpeed=1 時的下落時間
 constexpr double kLeadInMs = 2000.0;               // 開場倒數
@@ -253,13 +253,14 @@ void Game::drawPlayfield(double songTimeMs) const {
     DrawRectangle(originX_, static_cast<int>(kJudgeY) - 3, playfieldW_, 6, RAYWHITE);
 
     // 音符（含長押尾巴），只畫尚未完成、且在畫面範圍內的
+    const float noteH = kBaseNoteH * settings_.noteScale;
     const auto& notes = session_.notes();
     for (std::size_t i = 0; i < notes.size(); ++i) {
         if (session_.stateOf(i) == NoteState::Done) continue;
         const ManiaNote& n = notes[i];
         const bool holding = (session_.stateOf(i) == NoteState::Holding);
         const float headY = holding ? kJudgeY : noteY(n.startTime, songTimeMs, pxPerMs_);
-        if ((headY < -kNoteH || headY - kNoteH > kScreenH) && n.endTime <= 0) continue;
+        if ((headY < -noteH || headY - noteH > kScreenH) && n.endTime <= 0) continue;
 
         const float x = laneX(n.column) + 4;
         const float w = kLaneW - 8;
@@ -268,11 +269,11 @@ void Game::drawPlayfield(double songTimeMs) const {
         if (n.endTime > 0) {  // 長押身體
             const float tailY = noteY(n.endTime, songTimeMs, pxPerMs_);
             const float top = std::min(headY, tailY);
-            const float h = std::abs(headY - tailY) + kNoteH;
-            DrawRectangleRounded({x, top - kNoteH / 2, w, h}, 0.4f, 4,
+            const float h = std::abs(headY - tailY) + noteH;
+            DrawRectangleRounded({x, top - noteH / 2, w, h}, 0.4f, 4,
                                  Fade(nc, holding ? 0.85f : 0.55f));
         }
-        DrawRectangleRounded({x, headY - kNoteH / 2, w, kNoteH}, 0.4f, 4, nc);
+        DrawRectangleRounded({x, headY - noteH / 2, w, noteH}, 0.4f, 4, nc);
     }
 
     // 開場倒數

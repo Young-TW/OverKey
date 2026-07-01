@@ -445,8 +445,11 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
                     canvas.fillRect(cx0, std::min(headY, tailY), cx1, std::max(headY, tailY),
                                     nc);
                 }
-                if (headY >= 0 && headY <= judgePxY + 4)
-                    canvas.fillRect(cx0, headY - 3, cx1, headY + 1, nc);
+                if (headY >= 0 && headY <= judgePxY + 4) {
+                    // TUI 基準較 GUI 薄，故基準厚度取較大值（每格 8 像素）
+                    const int th = std::clamp((int)std::lround(10 * settings.noteScale), 3, 64);
+                    canvas.fillRect(cx0, headY - (th - 2), cx1, headY + 1, nc);
+                }
             }
 
             // 倒數
@@ -556,9 +559,9 @@ int toStoredKey(int kittyCode) {
 void runSettings(Terminal& term, Settings& settings) {
     PixelCanvas canvas(term.cols(), term.rows());
     std::string out;
-    constexpr int k7kBase = 4;             // 前 4 項為數值欄位
-    constexpr int k4kBase = k7kBase + 7;   // 11
-    constexpr int kFields = k4kBase + 4;   // 15
+    constexpr int k7kBase = 5;             // 前 5 項為數值欄位
+    constexpr int k4kBase = k7kBase + 7;   // 12
+    constexpr int kFields = k4kBase + 4;   // 16
     int selected = 0;
     int rebinding = -1;
     // 欄位索引 → 對應 keybind 槽（nullptr 表非鍵位欄位）
@@ -600,6 +603,8 @@ void runSettings(Terminal& term, Settings& settings) {
                 settings.musicVolume = std::clamp(settings.musicVolume + dir * 0.05f, 0.0f, 1.0f);
             else if (selected == 3 && dir)
                 settings.effectVolume = std::clamp(settings.effectVolume + dir * 0.05f, 0.0f, 1.0f);
+            else if (selected == 4 && dir)
+                settings.noteScale = std::clamp(settings.noteScale + dir * 0.1f, 0.5f, 3.0f);
             else if (selected >= k7kBase && (e.code == 13 || e.code == 32))
                 rebinding = selected;
         }
@@ -622,6 +627,8 @@ void runSettings(Terminal& term, Settings& settings) {
         row(2, "Music volume", buf, y++);
         std::snprintf(buf, sizeof(buf), "%d%%", (int)(settings.effectVolume * 100));
         row(3, "Effect volume", buf, y++);
+        std::snprintf(buf, sizeof(buf), "%.1fx", settings.noteScale);
+        row(4, "Note height", buf, y++);
         ++y;
         canvas.putText(4, y++, "7K KEYBINDS", kGray);
         for (int i = 0; i < 7; ++i) {

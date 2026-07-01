@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <future>
 #include <optional>
 #include <string>
 #include <thread>
@@ -231,6 +232,14 @@ std::string buildKittyCover(const fs::path& path, int col, int row, int boxCols,
     return s;
 }
 
+// 背景建構封面圖片序列的結果
+struct CoverResult {
+    std::string seq;
+    int rows = 0;
+    int boxCols = 0;
+    fs::path path;
+};
+
 // 回傳 kMenuQuit=離開、kMenuSettings=設定，否則為選擇的 index
 int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float musicVolume,
             const ScoreBook& scores) {
@@ -241,12 +250,21 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
 
     std::optional<MusicRes> preview;  // hover 副歌試聽
     fs::path previewPath;             // 正在播放的音訊檔（空＝無）
+    std::future<Music> pendingLoad;   // 背景載入中的音檔（避免讀檔阻塞主迴圈/破音）
+    fs::path pendingPath;
     auto selChangedAt = Clock::now();
     double previewStart = 0.0;
     int lastSel = selected;
+    auto nextFrame = Clock::now();  // 固定節奏（sleep_until，較 sleep_for 穩定）
+    auto prev = Clock::now();
+    FpsMeter fps;
+    double fAvg = 0, fLow1 = 0, fLow01 = 0;
+    int fpsTick = 0;
 
     fs::path coverPath;   // 已顯示的封面檔（空＝無）
     int coverRows = 0;    // 封面佔用列數
+    std::future<CoverResult> coverLoad;  // 背景解碼中的封面
+    fs::path coverPending;
     const int coverCol = term.cols() / 2 + 2;  // 面板起始欄（1-based）
     const int coverRow = 4;                     // 面板起始列（1-based）
 
@@ -257,6 +275,14 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
     };
 
     while (true) {
+        const auto frameStart = Clock::now();
+        fps.push(std::chrono::duration<double, std::milli>(frameStart - prev).count());
+        prev = frameStart;
+        if (++fpsTick >= 20) {
+            fpsTick = 0;
+            fps.stats(fAvg, fLow1, fLow01);
+        }
+
         term.refreshSize();
         if (canvas.cols() != term.cols() || canvas.rows() != term.rows())
             canvas.resize(term.cols(), term.rows());
@@ -282,29 +308,45 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
             infoFor = selected;
         }
 
-        // 副歌試聽：停穩後只有「音訊檔不同」才重載（同曲切難度→續播不重啟）
-        if (!entries.empty() && info &&
-            std::chrono::duration<double>(Clock::now() - selChangedAt).count() > 0.25) {
+        // 副歌試聽：停穩後於背景執行緒載入音檔（避免讀檔阻塞主迴圈導致舊試聽破音）
+        const bool settled =
+            !entries.empty() && info &&
+            std::chrono::duration<double>(Clock::now() - selChangedAt).count() > 0.25;
+        if (settled) {
             fs::path desired;
             if (!info->audioFilename.empty())
                 desired = entries[selected].path.parent_path() / info->audioFilename;
-            if (desired != previewPath) {
+            if (desired.empty()) {  // 無音檔 → 停播
                 preview.reset();
-                previewPath = desired;
-                if (!desired.empty()) {
-                    preview.emplace(desired.string().c_str());
-                    if (preview->valid()) {
-                        SetMusicVolume(preview->get(), musicVolume);
-                        PlayMusicStream(preview->get());
-                        previewStart = info->previewTimeMs >= 0
-                                           ? info->previewTimeMs / 1000.0
-                                           : GetMusicTimeLength(preview->get()) * 0.4;
-                        SeekMusicStream(preview->get(), (float)previewStart);
-                    } else {
-                        previewPath.clear();
-                    }
-                }
+                previewPath.clear();
+            } else if (desired != previewPath && desired != pendingPath && !pendingLoad.valid()) {
+                pendingPath = desired;
+                pendingLoad = std::async(std::launch::async, [p = desired.string()] {
+                    return LoadMusicStream(p.c_str());
+                });
             }
+        }
+        // 背景載入完成 → 切換（仍與目前選取相符才採用）
+        if (pendingLoad.valid() &&
+            pendingLoad.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+            Music m = pendingLoad.get();
+            fs::path curDesired;
+            if (settled && info && !info->audioFilename.empty())
+                curDesired = entries[selected].path.parent_path() / info->audioFilename;
+            if (m.stream.buffer && pendingPath == curDesired) {
+                preview.reset();  // 停舊、換新
+                preview.emplace(m);
+                previewPath = pendingPath;
+                SetMusicVolume(preview->get(), musicVolume);
+                PlayMusicStream(preview->get());
+                previewStart = info->previewTimeMs >= 0
+                                   ? info->previewTimeMs / 1000.0
+                                   : GetMusicTimeLength(preview->get()) * 0.4;
+                SeekMusicStream(preview->get(), (float)previewStart);
+            } else if (m.stream.buffer) {
+                UnloadMusicStream(m);  // 已過期，丟棄
+            }
+            pendingPath.clear();
         }
         if (preview && preview->valid()) {
             UpdateMusicStream(preview->get());
@@ -313,37 +355,50 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
                 SeekMusicStream(preview->get(), (float)previewStart);
         }
 
-        // 封面（kitty graphics）：停穩後只有「檔案不同」才重傳
-        if (!entries.empty() && info &&
-            std::chrono::duration<double>(Clock::now() - selChangedAt).count() > 0.25) {
+        // 封面（kitty graphics）：停穩後於背景執行緒解碼（避免阻塞主迴圈）
+        if (settled) {
             fs::path desired;
             if (!info->backgroundFilename.empty()) {
                 const fs::path bg = entries[selected].path.parent_path() / info->backgroundFilename;
                 std::error_code ec;
                 if (fs::exists(bg, ec)) desired = bg;
             }
-            if (desired != coverPath) {
+            if (desired.empty() && !coverPath.empty()) {  // 無封面 → 清除
+                term.write(kKittyDeleteAll);
+                coverPath.clear();
+                coverRows = 0;
+                canvas.setReserved(0, 0, -1, -1);
+                canvas.forceRedraw();
+            } else if (!desired.empty() && desired != coverPath && desired != coverPending &&
+                       !coverLoad.valid()) {
+                coverPending = desired;
                 const int boxCols = std::max(4, term.cols() - coverCol - 1);
                 const int boxRowsMax = std::max(3, (term.rows() - coverRow) / 2);
-                int rows = 0;
-                std::string seq = desired.empty()
-                                      ? std::string(kKittyDeleteAll)
-                                      : buildKittyCover(desired, coverCol, coverRow, boxCols,
-                                                        boxRowsMax, rows);
-                if (!desired.empty() && seq.empty()) {  // 載入失敗
-                    desired.clear();
-                    seq = kKittyDeleteAll;
-                    rows = 0;
-                }
-                term.write(seq);
-                coverPath = desired;
-                coverRows = rows;
-                if (coverRows > 0)
-                    canvas.setReserved(coverCol - 1, coverRow - 1, coverCol - 1 + boxCols - 1,
-                                       coverRow - 1 + coverRows - 1);
-                else
-                    canvas.setReserved(0, 0, -1, -1);
-                canvas.forceRedraw();  // 保留區變動 → 全畫面重畫
+                coverLoad = std::async(std::launch::async, [=] {
+                    CoverResult r;
+                    r.path = desired;
+                    r.boxCols = boxCols;
+                    r.seq = buildKittyCover(desired, coverCol, coverRow, boxCols, boxRowsMax,
+                                            r.rows);
+                    return r;
+                });
+            }
+        }
+        // 封面解碼完成 → 顯示
+        if (coverLoad.valid() &&
+            coverLoad.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+            const CoverResult r = coverLoad.get();
+            coverPending.clear();
+            if (!r.seq.empty() && r.rows > 0) {
+                term.write(r.seq);
+                coverPath = r.path;
+                coverRows = r.rows;
+                canvas.setReserved(coverCol - 1, coverRow - 1, coverCol - 1 + r.boxCols - 1,
+                                   coverRow - 1 + coverRows - 1);
+                canvas.forceRedraw();
+            } else {  // 解碼失敗：記住此路徑避免重試
+                coverPath = r.path;
+                coverRows = 0;
             }
         }
 
@@ -394,9 +449,17 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
             }
         }
 
+        {  // FPS（右上角）
+            char fbuf[48];
+            std::snprintf(fbuf, sizeof(fbuf), "FPS %.0f  1%%%.0f  .1%%%.0f", fAvg, fLow1, fLow01);
+            canvas.putText(term.cols() - (int)std::string(fbuf).size() - 1, 0, fbuf, kGray);
+        }
+
         canvas.flush(out);
         term.write(out);
-        std::this_thread::sleep_for(std::chrono::milliseconds(16));
+        nextFrame += std::chrono::milliseconds(8);  // ~125fps 穩定節奏
+        std::this_thread::sleep_until(nextFrame);
+        if (nextFrame < Clock::now()) nextFrame = Clock::now();
     }
 }
 

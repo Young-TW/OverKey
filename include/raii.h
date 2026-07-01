@@ -29,6 +29,7 @@ public:
 class MusicRes {
 public:
     explicit MusicRes(const char* path) : music_(LoadMusicStream(path)) {}
+    explicit MusicRes(Music m) : music_(m) {}  // 接管已載入的 Music（可於背景執行緒載入）
     ~MusicRes() {
         if (valid()) UnloadMusicStream(music_);
     }

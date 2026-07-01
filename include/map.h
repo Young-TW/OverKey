@@ -31,12 +31,24 @@ struct BeatmapInfo {
     int previewTimeMs = -1;  // [General] PreviewTime（試聽起點，副歌）；-1=未指定
 };
 
-// 譜面檔頭（只含篩選所需欄位）
+// 譜面檔頭（篩選 + 清單標籤所需欄位，只讀到 [HitObjects] 前）
 struct BeatmapHeader {
     int mode = -1;
     int keyCount = 0;
+    std::string title;
+    std::string artist;
+    std::string version;
     // 目前支援的 mania 鍵數：4K 與 7K
     bool isSupported() const { return mode == 3 && (keyCount == 4 || keyCount == 7); }
+    // 清單顯示名："Artist - Title [Diff]"；缺 title 時回傳空字串
+    std::string label() const {
+        if (title.empty()) return "";
+        std::string s;
+        if (!artist.empty()) s += artist + " - ";
+        s += title;
+        if (!version.empty()) s += " [" + version + "]";
+        return s;
+    }
 };
 
 // 極輕量探測：只讀到 [HitObjects] 前就停，用於大量譜面庫的快速篩選

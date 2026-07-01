@@ -182,6 +182,9 @@ BeatmapHeader probeBeatmapQua(const std::filesystem::path& filename) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
         const std::string t = trim(line);
         if (t.rfind("Mode:", 0) == 0) h.keyCount = quaKeyCount(keyValue(t));
+        else if (t.rfind("Title:", 0) == 0) h.title = stripQuotes(keyValue(t));
+        else if (t.rfind("Artist:", 0) == 0) h.artist = stripQuotes(keyValue(t));
+        else if (t.rfind("DifficultyName:", 0) == 0) h.version = stripQuotes(keyValue(t));
         else if (t.rfind("HitObjects:", 0) == 0) break;  // 檔頭讀完
     }
     return h;
@@ -360,6 +363,10 @@ BeatmapHeader probeBeatmap(const std::filesystem::path& filename) {
                 h.keyCount = std::stoi(keyValue(trimmed));
             } catch (...) {
             }
+        } else if (section == "[Metadata]") {
+            if (trimmed.rfind("Title:", 0) == 0) h.title = keyValue(trimmed);
+            else if (trimmed.rfind("Artist:", 0) == 0) h.artist = keyValue(trimmed);
+            else if (trimmed.rfind("Version:", 0) == 0) h.version = keyValue(trimmed);
         }
     }
     return h;

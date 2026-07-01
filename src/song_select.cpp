@@ -33,12 +33,13 @@ SongSelect::SongSelect(std::filesystem::path mapsDir) : mapsDir_(std::move(mapsD
                  mapsDir_, std::filesystem::directory_options::skip_permission_denied, ec);
              !ec && it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
             const auto& p = it->path();
-            if ((p.extension() == ".osu" || p.extension() == ".qua") &&
-                probeBeatmap(p).isSupported()) {
-                std::filesystem::path rel = p.lexically_relative(mapsDir_);
-                std::string label = rel.replace_extension("").string();
-                entries_.push_back({p, std::move(label)});
-            }
+            if (p.extension() != ".osu" && p.extension() != ".qua") continue;
+            const BeatmapHeader h = probeBeatmap(p);
+            if (!h.isSupported()) continue;
+            // 優先用譜面標題，缺 metadata 時退回相對路徑
+            std::string label = h.label();
+            if (label.empty()) label = p.lexically_relative(mapsDir_).replace_extension("").string();
+            entries_.push_back({p, std::move(label)});
         }
     }
     std::sort(entries_.begin(), entries_.end(),

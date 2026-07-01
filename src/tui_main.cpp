@@ -107,10 +107,12 @@ std::vector<Entry> scanMaps(const fs::path& dir) {
              dir, fs::directory_options::skip_permission_denied, ec);
          !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
         const auto& p = it->path();
-        if ((p.extension() == ".osu" || p.extension() == ".qua") &&
-            probeBeatmap(p).isSupported()) {
-            out.push_back({p, p.lexically_relative(dir).replace_extension("").string()});
-        }
+        if (p.extension() != ".osu" && p.extension() != ".qua") continue;
+        const BeatmapHeader h = probeBeatmap(p);
+        if (!h.isSupported()) continue;
+        std::string label = h.label();
+        if (label.empty()) label = p.lexically_relative(dir).replace_extension("").string();
+        out.push_back({p, std::move(label)});
     }
     std::sort(out.begin(), out.end(),
               [](const Entry& a, const Entry& b) { return a.label < b.label; });

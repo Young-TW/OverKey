@@ -5,8 +5,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <functional>
 #include <future>
 #include <optional>
+#include <queue>
 #include <string>
 #include <thread>
 #include <vector>
@@ -124,6 +126,59 @@ std::vector<Entry> scanMaps(const fs::path& dir) {
 
 constexpr auto kFramePeriod = std::chrono::microseconds(1000000 / 1000);  // 目標 1000fps
 
+// 常駐背景載入執行緒（建一次重複用；避免 std::async 每次新建 thread 造成切歌抽幀）
+class Loader {
+public:
+    Loader() : worker_([this] { run(); }) {}
+    ~Loader() {
+        {
+            std::lock_guard<std::mutex> lk(m_);
+            stop_ = true;
+        }
+        cv_.notify_all();
+        if (worker_.joinable()) worker_.join();
+    }
+    template <class F>
+    auto submit(F&& f) -> std::future<std::invoke_result_t<F>> {
+        using R = std::invoke_result_t<F>;
+        auto task = std::make_shared<std::packaged_task<R()>>(std::forward<F>(f));
+        std::future<R> fut = task->get_future();
+        {
+            std::lock_guard<std::mutex> lk(m_);
+            q_.push([task] { (*task)(); });
+        }
+        cv_.notify_one();
+        return fut;
+    }
+    void post(std::function<void()> f) {  // 射後不理（如卸載舊音樂）
+        {
+            std::lock_guard<std::mutex> lk(m_);
+            q_.push(std::move(f));
+        }
+        cv_.notify_one();
+    }
+
+private:
+    void run() {
+        for (;;) {
+            std::function<void()> job;
+            {
+                std::unique_lock<std::mutex> lk(m_);
+                cv_.wait(lk, [&] { return stop_ || !q_.empty(); });
+                if (stop_ && q_.empty()) return;
+                job = std::move(q_.front());
+                q_.pop();
+            }
+            job();
+        }
+    }
+    std::thread worker_;
+    std::mutex m_;
+    std::condition_variable cv_;
+    std::queue<std::function<void()>> q_;
+    bool stop_ = false;
+};
+
 // 重繪率統計：avg / 1% low / 0.1% low（取最差幀時間換算）
 struct FpsMeter {
     static constexpr std::size_t N = 2000;  // 取樣視窗（幀）
@@ -232,6 +287,12 @@ std::string buildKittyCover(const fs::path& path, int col, int row, int boxCols,
     return s;
 }
 
+// 背景載入的試聽（已在背景 Play+Seek 到副歌點，避免主執行緒 MP3 seek 卡頓）
+struct PreviewLoad {
+    Music music{};
+    double start = 0.0;
+};
+
 // 背景建構封面圖片序列的結果
 struct CoverResult {
     std::string seq;
@@ -245,12 +306,15 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
             const ScoreBook& scores) {
     PixelCanvas canvas(term.cols(), term.rows());
     std::string out;
+    Loader loader;  // 常駐背景載入執行緒
     std::optional<BeatmapInfo> info;
     int infoFor = -1;
+    std::future<BeatmapInfo> infoLoad;  // 背景解析中的摘要
+    int infoLoadFor = -1;
 
-    std::optional<MusicRes> preview;  // hover 副歌試聽
-    fs::path previewPath;             // 正在播放的音訊檔（空＝無）
-    std::future<Music> pendingLoad;   // 背景載入中的音檔（避免讀檔阻塞主迴圈/破音）
+    std::optional<MusicRes> preview;      // hover 副歌試聽
+    fs::path previewPath;                 // 正在播放的音訊檔（空＝無）
+    std::future<PreviewLoad> pendingLoad; // 背景載入（含 Play+Seek）
     fs::path pendingPath;
     auto selChangedAt = Clock::now();
     double previewStart = 0.0;
@@ -303,14 +367,24 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
             selChangedAt = Clock::now();
         }
 
-        if (!entries.empty() && selected != infoFor) {
-            info = loadBeatmapInfo(entries[selected].path);
-            infoFor = selected;
+        // 譜面摘要於背景執行緒解析；停穩 80ms 才啟動，避免連續捲動時每步都生執行緒
+        const double sinceChange =
+            std::chrono::duration<double>(Clock::now() - selChangedAt).count();
+        if (!entries.empty() && selected != infoFor && selected != infoLoadFor &&
+            !infoLoad.valid() && sinceChange > 0.08) {
+            infoLoadFor = selected;
+            infoLoad = loader.submit([p = entries[selected].path] { return loadBeatmapInfo(p); });
         }
+        if (infoLoad.valid() &&
+            infoLoad.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+            info = infoLoad.get();
+            infoFor = infoLoadFor;
+        }
+        const bool infoReady = info.has_value() && infoFor == selected;
 
         // 副歌試聽：停穩後於背景執行緒載入音檔（避免讀檔阻塞主迴圈導致舊試聽破音）
         const bool settled =
-            !entries.empty() && info &&
+            infoReady &&
             std::chrono::duration<double>(Clock::now() - selChangedAt).count() > 0.25;
         if (settled) {
             fs::path desired;
@@ -321,30 +395,35 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
                 previewPath.clear();
             } else if (desired != previewPath && desired != pendingPath && !pendingLoad.valid()) {
                 pendingPath = desired;
-                pendingLoad = std::async(std::launch::async, [p = desired.string()] {
-                    return LoadMusicStream(p.c_str());
-                });
+                pendingLoad = loader.submit(
+                    [p = desired.string(), pv = info->previewTimeMs, vol = musicVolume] {
+                        PreviewLoad pl;
+                        pl.music = LoadMusicStream(p.c_str());
+                        if (pl.music.stream.buffer) {  // 慢速的 seek 也在背景做，避免卡主迴圈
+                            SetMusicVolume(pl.music, vol);
+                            PlayMusicStream(pl.music);
+                            pl.start = pv >= 0 ? pv / 1000.0 : GetMusicTimeLength(pl.music) * 0.4;
+                            SeekMusicStream(pl.music, (float)pl.start);
+                        }
+                        return pl;
+                    });
             }
         }
-        // 背景載入完成 → 切換（仍與目前選取相符才採用）
+        // 背景載入完成（已 Play+Seek）→ 瞬間交接（舊的丟背景卸載）
         if (pendingLoad.valid() &&
             pendingLoad.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-            Music m = pendingLoad.get();
+            PreviewLoad pl = pendingLoad.get();
             fs::path curDesired;
             if (settled && info && !info->audioFilename.empty())
                 curDesired = entries[selected].path.parent_path() / info->audioFilename;
-            if (m.stream.buffer && pendingPath == curDesired) {
-                preview.reset();  // 停舊、換新
-                preview.emplace(m);
+            if (pl.music.stream.buffer && pendingPath == curDesired) {
+                Music old = preview ? preview->release() : Music{};
+                preview.emplace(pl.music);  // 已在背景播放並定位到副歌點
                 previewPath = pendingPath;
-                SetMusicVolume(preview->get(), musicVolume);
-                PlayMusicStream(preview->get());
-                previewStart = info->previewTimeMs >= 0
-                                   ? info->previewTimeMs / 1000.0
-                                   : GetMusicTimeLength(preview->get()) * 0.4;
-                SeekMusicStream(preview->get(), (float)previewStart);
-            } else if (m.stream.buffer) {
-                UnloadMusicStream(m);  // 已過期，丟棄
+                previewStart = pl.start;
+                if (old.stream.buffer) loader.post([old] { UnloadMusicStream(old); });
+            } else if (pl.music.stream.buffer) {
+                loader.post([m = pl.music] { UnloadMusicStream(m); });  // 已過期
             }
             pendingPath.clear();
         }
@@ -367,14 +446,15 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
                 term.write(kKittyDeleteAll);
                 coverPath.clear();
                 coverRows = 0;
+                // 只重畫原本被保留（蓋住）的面板區域
+                canvas.invalidate(coverCol - 1, coverRow - 1, term.cols() - 1, term.rows() - 1);
                 canvas.setReserved(0, 0, -1, -1);
-                canvas.forceRedraw();
             } else if (!desired.empty() && desired != coverPath && desired != coverPending &&
                        !coverLoad.valid()) {
                 coverPending = desired;
                 const int boxCols = std::max(4, term.cols() - coverCol - 1);
                 const int boxRowsMax = std::max(3, (term.rows() - coverRow) / 2);
-                coverLoad = std::async(std::launch::async, [=] {
+                coverLoad = loader.submit([=] {
                     CoverResult r;
                     r.path = desired;
                     r.boxCols = boxCols;
@@ -395,7 +475,6 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
                 coverRows = r.rows;
                 canvas.setReserved(coverCol - 1, coverRow - 1, coverCol - 1 + r.boxCols - 1,
                                    coverRow - 1 + coverRows - 1);
-                canvas.forceRedraw();
             } else {  // 解碼失敗：記住此路徑避免重試
                 coverPath = r.path;
                 coverRows = 0;
@@ -421,7 +500,7 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
                     (sel ? "> " : "  ") + ellipsize(entries[idx].label, listW - 2);
                 canvas.putText(2, top + i, line, sel ? kWhite : kGray);
             }
-            if (info) {
+            if (infoReady) {
                 const int px = term.cols() / 2 + 2;
                 // 有封面時文字排在封面下方
                 int y = coverRows > 0 ? (coverRow - 1 + coverRows + 1) : 4;

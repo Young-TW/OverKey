@@ -39,6 +39,11 @@ public:
 
     bool valid() const { return music_.stream.buffer != nullptr; }
     Music& get() { return music_; }
+    Music release() {  // 交出所有權，析構時不再卸載（卸載可移到其他執行緒）
+        Music m = music_;
+        music_ = {};
+        return m;
+    }
 
 private:
     Music music_{};

@@ -1,6 +1,7 @@
 #include "tui.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 
@@ -46,6 +47,8 @@ Terminal::Terminal() {
     tcsetattr(STDIN_FILENO, TCSANOW, &raw);
     ok_ = true;
 
+    writer_ = std::thread(&Terminal::writerLoop, this);  // 背景輸出
+
     refreshSize();
     // 替代螢幕、隱藏游標、推入 Kitty keyboard 旗標（1 區分 + 2 事件類型 + 8 全鍵escape）
     write("\x1b[?1049h\x1b[?25l\x1b[>11u");
@@ -54,12 +57,43 @@ Terminal::Terminal() {
 Terminal::~Terminal() {
     if (!ok_) return;
     write("\x1b[<u\x1b[?25h\x1b[?1049l");  // pop kitty、顯示游標、回主螢幕
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        stop_ = true;
+    }
+    cv_.notify_one();
+    if (writer_.joinable()) writer_.join();  // 確保還原序列已寫出
     tcsetattr(STDIN_FILENO, TCSANOW, &orig_);
 }
 
-void Terminal::write(const std::string& s) const {
-    ssize_t n = ::write(STDOUT_FILENO, s.data(), s.size());
-    (void)n;
+// 主執行緒只把輸出排入佇列，實際寫入在背景，避免大量寫入（如 kitty 圖片）阻塞畫面
+void Terminal::write(const std::string& s) {
+    if (!ok_ || s.empty()) return;
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        outq_ += s;
+    }
+    cv_.notify_one();
+}
+
+void Terminal::writerLoop() {
+    std::string chunk;
+    for (;;) {
+        {
+            std::unique_lock<std::mutex> lk(mtx_);
+            cv_.wait(lk, [&] { return stop_ || !outq_.empty(); });
+            if (stop_ && outq_.empty()) return;
+            chunk.swap(outq_);
+        }
+        size_t off = 0;
+        while (off < chunk.size()) {
+            const ssize_t w = ::write(STDOUT_FILENO, chunk.data() + off, chunk.size() - off);
+            if (w > 0) off += static_cast<size_t>(w);
+            else if (w < 0 && errno == EINTR) continue;
+            else break;
+        }
+        chunk.clear();
+    }
 }
 
 void Terminal::refreshSize() {
@@ -202,6 +236,16 @@ void PixelCanvas::setReserved(int cx0, int cy0, int cx1, int cy1) {
 
 void PixelCanvas::forceRedraw() {
     std::fill(prev_.begin(), prev_.end(), Cell{0xFFFFFFFFu, 1, 1, 1, 1, 1, 1});
+}
+
+void PixelCanvas::invalidate(int cx0, int cy0, int cx1, int cy1) {
+    cx0 = std::max(0, cx0);
+    cy0 = std::max(0, cy0);
+    cx1 = std::min(cols_ - 1, cx1);
+    cy1 = std::min(rows_ - 1, cy1);
+    for (int y = cy0; y <= cy1; ++y)
+        for (int x = cx0; x <= cx1; ++x)
+            prev_[static_cast<size_t>(y) * cols_ + x] = Cell{0xFFFFFFFFu, 1, 1, 1, 1, 1, 1};
 }
 
 void PixelCanvas::putText(int cx, int cy, const std::string& s, Rgb color) {

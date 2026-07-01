@@ -1,8 +1,11 @@
 #ifndef TUI_H
 #define TUI_H
 
+#include <condition_variable>
 #include <cstdint>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <termios.h>
@@ -39,17 +42,25 @@ public:
     static bool isTTY();
 
     std::vector<KeyEvent> poll();  // 讀取並解析目前可得的輸入
-    void write(const std::string& s) const;
+    void write(const std::string& s);  // 排入背景 writer，立即返回（不阻塞主迴圈）
 
     int rows() const { return rows_; }
     int cols() const { return cols_; }
     void refreshSize();
 
 private:
+    void writerLoop();  // 背景輸出執行緒：把佇列寫到終端機
+
     termios orig_{};
     bool ok_ = false;
     std::string buf_;  // 跨幀保留未解析完的位元組
     int rows_ = 24, cols_ = 80;
+
+    std::thread writer_;
+    std::mutex mtx_;
+    std::condition_variable cv_;
+    std::string outq_;  // 待寫入的輸出佇列
+    bool stop_ = false;
 };
 
 // 以八分塊字元（▁▂…▇█）提供垂直 8 倍次格解析度的實心畫布。
@@ -74,7 +85,8 @@ public:
     // 保留區（格座標，含端點）：flush 不輸出此範圍，供 kitty 圖片顯示不被覆蓋。
     // 傳入 cx1<cx0 代表清除保留區。
     void setReserved(int cx0, int cy0, int cx1, int cy1);
-    void forceRedraw();  // 下一次 flush 全部重畫（保留區變動時用）
+    void forceRedraw();  // 下一次 flush 全部重畫
+    void invalidate(int cx0, int cy0, int cx1, int cy1);  // 只讓某區下次 flush 重畫
 
     void flush(std::string& out);  // 產生 diff 輸出並更新 prev
 

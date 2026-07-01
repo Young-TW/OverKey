@@ -26,6 +26,13 @@ public:
     bool running() const { return started_; }          // 已過開場倒數
     bool startedThisTick() const { return startedThisTick_; }  // 本幀剛跨過 0
 
+    // 直接跳到指定時間（跳過前奏用）；視為已開始
+    void seek(double ms) {
+        timeMs_ = ms;
+        started_ = true;
+        startedThisTick_ = false;
+    }
+
 private:
     double timeMs_;
     bool started_ = false;
@@ -67,6 +74,7 @@ public:
     double meanErrorMs() const { return errSamples_ ? signedErrSum_ / errSamples_ : 0.0; }
     double songEndMs() const { return songEndMs_; }
     bool finished(double songTimeMs) const { return songTimeMs >= songEndMs_; }
+    int firstNoteMs() const { return firstNoteMs_; }  // 第一個音符時間，無音符為 -1
 
 private:
     void addJudgment(Judgment j);
@@ -90,6 +98,7 @@ private:
     std::array<int, kHistBins> hist_{};
 
     double songEndMs_ = 0.0;
+    int firstNoteMs_ = -1;
     Judgment lastJudge_ = Judgment::None;
 };
 

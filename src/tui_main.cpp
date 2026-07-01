@@ -36,6 +36,8 @@ namespace {
 
 constexpr const char* kConfigFile = "overkey.cfg";
 constexpr const char* kScoresFile = "overkey-scores.txt";
+constexpr double kSkipLeadMs = 2000.0;  // 跳過前奏後落在第一個音符前多少 ms
+constexpr double kMinIntroMs = 3000.0;  // 前奏長於此才可跳過
 constexpr double kLeadInMs = 2000.0;
 constexpr double kBaseApproachMs = 550.0;
 
@@ -460,6 +462,22 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
                     if (musicStarted) PauseMusicStream(music.get());
                     continue;
                 }
+                // 空白鍵跳過前奏
+                const int fn = session.firstNoteMs();
+                if (press && e.code == 32 && fn > kMinIntroMs &&
+                    songTimeMs < fn - kSkipLeadMs) {
+                    const double target = fn - kSkipLeadMs;
+                    clock.seek(target);
+                    if (haveMusic) {
+                        if (!musicStarted) {
+                            PlayMusicStream(music.get());
+                            musicStarted = true;
+                        }
+                        SeekMusicStream(music.get(), (float)(target / 1000.0));
+                    }
+                    songTimeMs = target + offset;
+                    continue;
+                }
                 const int lane = laneOf(e.code, laneKeys, keyCount);
                 if (lane < 0) continue;
                 if (press) session.press(lane, songTimeMs);
@@ -547,6 +565,12 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
                 const int sec = (int)std::ceil(-songTimeMs / 1000.0);
                 canvas.putText(originCol + playCells / 2 - 1, term.rows() / 2,
                                std::to_string(sec), kWhite);
+            }
+            // 跳過前奏提示
+            const int fn = session.firstNoteMs();
+            if (fn > kMinIntroMs && songTimeMs < fn - kSkipLeadMs) {
+                const char* h = "SPACE: skip intro";
+                canvas.putText(originCol + playCells / 2 - 8, judgeRow - 3, h, kGray);
             }
 
             // HUD

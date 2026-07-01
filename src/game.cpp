@@ -23,6 +23,8 @@ constexpr float kBaseNoteH = 22.0f;  // 音符基準厚度（乘上 settings.not
 
 constexpr double kBaseApproachMs = 550.0;          // scrollSpeed=1 時的下落時間
 constexpr double kLeadInMs = 2000.0;               // 開場倒數
+constexpr double kSkipLeadMs = 2000.0;             // 跳過前奏後落在第一個音符前多少 ms
+constexpr double kMinIntroMs = 3000.0;             // 前奏長於此才可跳過
 constexpr double kFlashDur = 0.18;                 // 命中閃光秒數
 
 // 依鍵數產生音軌配色：奇數鍵的正中央為 GOLD，其餘藍/白交替
@@ -158,10 +160,31 @@ void Game::run(Viewport& vp) {
             }
             songTimeMs = clock.timeMs() + offsetMs_;
 
-            // 輸入 → core
-            for (int c = 0; c < keyCount_; ++c) {
-                if (IsKeyPressed(laneKeys_[c])) session_.press(c, songTimeMs);
-                if (IsKeyReleased(laneKeys_[c])) session_.release(c, songTimeMs);
+            // 空白鍵跳過前奏（第一個音符前的長空檔）
+            const int firstNote = session_.firstNoteMs();
+            const bool canSkip =
+                firstNote > kMinIntroMs && songTimeMs < firstNote - kSkipLeadMs;
+            bool didSkip = false;
+            if (canSkip && IsKeyPressed(KEY_SPACE)) {
+                const double target = firstNote - kSkipLeadMs;
+                clock.seek(target);
+                if (haveMusic) {
+                    if (!musicStarted) {
+                        PlayMusicStream(music.get());
+                        musicStarted = true;
+                    }
+                    SeekMusicStream(music.get(), static_cast<float>(target / 1000.0));
+                }
+                songTimeMs = target + offsetMs_;
+                didSkip = true;
+            }
+
+            // 輸入 → core（跳過的那幀不處理軌道，避免空白鍵同時打到 lane）
+            if (!didSkip) {
+                for (int c = 0; c < keyCount_; ++c) {
+                    if (IsKeyPressed(laneKeys_[c])) session_.press(c, songTimeMs);
+                    if (IsKeyReleased(laneKeys_[c])) session_.release(c, songTimeMs);
+                }
             }
             session_.advance(songTimeMs);
 
@@ -287,6 +310,14 @@ void Game::drawPlayfield(double songTimeMs) const {
         const int fs = 120;
         DrawText(txt, originX_ + playfieldW_ / 2 - MeasureText(txt, fs) / 2,
                  kScreenH / 2 - fs / 2, fs, Fade(RAYWHITE, 0.6f));
+    }
+
+    // 跳過前奏提示
+    const int firstNote = session_.firstNoteMs();
+    if (firstNote > kMinIntroMs && songTimeMs < firstNote - kSkipLeadMs) {
+        const char* h = "SPACE: skip intro";
+        DrawText(h, originX_ + playfieldW_ / 2 - MeasureText(h, 24) / 2,
+                 static_cast<int>(kJudgeY) - 60, 24, Fade(RAYWHITE, 0.7f));
     }
 
     // ---- HUD ----

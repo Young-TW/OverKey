@@ -53,6 +53,7 @@ PlaySession::PlaySession(std::vector<ManiaNote> notes)
     for (const ManiaNote& n : notes_) {
         const int last = (n.endTime > 0) ? n.endTime : n.startTime;
         songEndMs_ = std::max(songEndMs_, static_cast<double>(last));
+        if (firstNoteMs_ < 0 || n.startTime < firstNoteMs_) firstNoteMs_ = n.startTime;
         totalUnits_ += (n.endTime > 0) ? 2 : 1;  // 長押算頭、尾兩個判定單位
     }
     songEndMs_ += kEndPadMs;

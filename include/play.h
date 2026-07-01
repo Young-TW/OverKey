@@ -22,6 +22,9 @@ public:
     // frameDeltaMs：本幀經過的毫秒；audioPosMs：音訊播放位置(ms)，<0 表示無音訊。
     void tick(double frameDeltaMs, double audioPosMs);
 
+    // rate mod：開始後歌曲時間以 rate× 前進（音訊需另外 SetMusicPitch(rate) 對齊）。
+    void setRate(double r) { rate_ = (r > 0.0) ? r : 1.0; }
+
     double timeMs() const { return timeMs_; }
     bool running() const { return started_; }          // 已過開場倒數
     bool startedThisTick() const { return startedThisTick_; }  // 本幀剛跨過 0
@@ -35,6 +38,7 @@ public:
 
 private:
     double timeMs_;
+    double rate_ = 1.0;
     bool started_ = false;
     bool startedThisTick_ = false;
 };

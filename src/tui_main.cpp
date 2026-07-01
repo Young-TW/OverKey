@@ -209,6 +209,14 @@ struct FpsMeter {
 
 constexpr int kMenuQuit = -1;
 constexpr int kMenuSettings = -2;
+constexpr int kMenuMods = -3;
+
+constexpr float kRateMin = 0.5f;
+constexpr float kRateMax = 2.0f;
+constexpr float kRateStep = 0.05f;
+
+// rate 是否偏離 1.0x（用容差，避免 0.05f 累積誤差誤判 1.00x 為 mod）
+bool rateModded(float r) { return std::abs(r - 1.0f) > 1e-3f; }
 
 constexpr const char* kKittyDeleteAll = "\x1b_Ga=d,d=A,q=2\x1b\\";  // 刪除所有 kitty 圖片
 constexpr const char* kKittyClearPlacements =
@@ -303,7 +311,7 @@ struct CoverResult {
 
 // 回傳 kMenuQuit=離開、kMenuSettings=設定，否則為選擇的 index
 int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float musicVolume,
-            const ScoreBook& scores) {
+            float rate, const ScoreBook& scores) {
     PixelCanvas canvas(term.cols(), term.rows());
     std::string out;
     Loader loader;  // 常駐背景載入執行緒
@@ -355,6 +363,7 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
             if (e.type != KeyEvent::Press) continue;
             if (e.code == 27 || e.code == 'q' || e.code == 3) return leave(kMenuQuit);
             if (e.code == 9) return leave(kMenuSettings);  // Tab
+            if (e.code == 'm') return leave(kMenuMods);
             if (entries.empty()) continue;
             if (e.code == 'j' || e.code == kKeyDown)
                 selected = (selected + 1) % entries.size();
@@ -483,7 +492,12 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
 
         canvas.clear();
         canvas.putText(2, 1, "OVERKEY  (TUI)", kGold);
-        canvas.putText(2, 2, "up/down move   enter play   tab settings   q quit", kGray);
+        canvas.putText(2, 2, "up/down move   enter play   m mods   tab settings   q quit", kGray);
+        if (rateModded(rate)) {  // 有開 mod 時提示
+            char rbuf[24];
+            std::snprintf(rbuf, sizeof(rbuf), "RATE %.2fx", rate);
+            canvas.putText(term.cols() / 2 - 2, 1, rbuf, kGold);
+        }
 
         if (entries.empty()) {
             canvas.putText(2, 4, "no mania 4K/7K maps found", judgeRgb(Judgment::Miss));
@@ -544,7 +558,7 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
 
 // 遊玩 + 結算；ESC/q 中途回選單
 void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
-              ScoreBook& scores) {
+              ScoreBook& scores, float rate) {
     Beatmap map = loadBeatmap(entry.path);
     if (map.notes.empty()) return;
 
@@ -561,7 +575,10 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
     const fs::path audioPath = entry.path.parent_path() / map.audioFilename;
     MusicRes music{audioPath.string().c_str()};
     const bool haveMusic = music.valid();
-    if (haveMusic) SetMusicVolume(music.get(), settings.musicVolume);
+    if (haveMusic) {
+        SetMusicVolume(music.get(), settings.musicVolume);
+        SetMusicPitch(music.get(), rate);  // rate mod：改播放速度（音高一起變）
+    }
 
     // 譜包自帶打擊取樣優先，否則用傳入的合成音
     std::optional<SoundRes> packHit;
@@ -574,6 +591,7 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
     SetSoundVolume(hitSound, settings.effectVolume);
 
     SongClock clock{kLeadInMs};
+    clock.setRate(rate);
     bool musicStarted = false;
     double songTimeMs = -kLeadInMs;
 
@@ -606,6 +624,7 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
         }
         session = PlaySession(map.notes);
         clock = SongClock{kLeadInMs};
+        clock.setRate(rate);
         musicStarted = false;
         songTimeMs = -kLeadInMs;
         playing = true;
@@ -729,7 +748,7 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
             if (anyHit) PlaySound(hitSound);
             if (session.finished(songTimeMs)) {
                 playing = false;
-                if (!recorded) {  // 打完提交成績
+                if (!recorded && !rateModded(rate)) {  // rate mod 局不計入 best
                     scores.submit(scoreKey, {session.score(), session.accuracy(),
                                              session.grade(), session.maxCombo(), true});
                     recorded = true;
@@ -846,6 +865,10 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
             std::snprintf(buf, sizeof(buf), "SPEED %.1fx %.0fms", settings.scrollSpeed,
                           (term.rows() * 8) / pxPerMs);
             canvas.putText(1, 3, buf, kGray);
+            if (rateModded(rate)) {
+                std::snprintf(buf, sizeof(buf), "RATE %.2fx", rate);
+                canvas.putText(1, 5, buf, kGold);
+            }
             std::snprintf(buf, sizeof(buf), "FPS %.0f  1%%%.0f  .1%%%.0f", fAvg, fLow1, fLow01);
             canvas.putText(1, 4, buf, kGray);
             if (session.lastJudgment() != Judgment::None) {
@@ -902,7 +925,10 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
                 canvas.putText(cx - 16, ++y, buf, kGold);
             }
             ++y;
-            if (prevBest.valid && session.score() > prevBest.score) {
+            if (rateModded(rate)) {
+                std::snprintf(buf, sizeof(buf), "RATE %.2fx  -  not recorded", rate);
+                canvas.putText(cx - 12, y, buf, kGold);
+            } else if (prevBest.valid && session.score() > prevBest.score) {
                 canvas.putText(cx - 6, y, "NEW RECORD!", kGold);
             } else if (prevBest.valid) {
                 std::snprintf(buf, sizeof(buf), "BEST  %d  %.2f%%  %s", prevBest.score,
@@ -1044,6 +1070,48 @@ void runSettings(Terminal& term, Settings& settings) {
     }
 }
 
+// Mod 選單：目前只有 rate（0.5x~2.0x，0.05 一階）。rate 為暫時性（不存檔）。
+void runModMenu(Terminal& term, float& rate) {
+    PixelCanvas canvas(term.cols(), term.rows());
+    std::string out;
+    auto next = Clock::now();
+
+    while (true) {
+        term.refreshSize();
+        if (canvas.cols() != term.cols() || canvas.rows() != term.rows())
+            canvas.resize(term.cols(), term.rows());
+
+        for (const KeyEvent& e : term.poll()) {
+            if (e.type != KeyEvent::Press) continue;
+            if (e.code == 27 || e.code == 'q' || e.code == 9 || e.code == 'm') return;
+            const int dir = (e.code == kKeyRight || e.code == 'l') ? 1
+                            : (e.code == kKeyLeft || e.code == 'h') ? -1
+                                                                    : 0;
+            if (dir) {
+                rate = std::clamp(rate + dir * kRateStep, kRateMin, kRateMax);
+                rate = std::round(rate / kRateStep) * kRateStep;  // 貼齊階距、去除累積誤差
+            }
+            if (e.code == 'r') rate = 1.0f;  // 重設
+        }
+
+        canvas.clear();
+        canvas.putText(2, 1, "MODS", kGold);
+        const bool on = rateModded(rate);
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "%.2fx", rate);
+        canvas.putText(4, 3, "> Rate", on ? kGold : kWhite);
+        canvas.putText(20, 3, buf, on ? kGold : kWhite);
+        canvas.putText(4, 5, "left/right adjust (0.05)    r reset    esc back", kGray);
+        canvas.putText(4, 6, "0.5x-2.0x: changes song speed & pitch (difficulty scales)", kGray);
+
+        canvas.flush(out);
+        term.write(out);
+        next += std::chrono::milliseconds(16);
+        std::this_thread::sleep_until(next);
+        if (next < Clock::now()) next = Clock::now();
+    }
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -1065,8 +1133,10 @@ int main(int argc, char* argv[]) {
     {
         Terminal term;  // RAII：raw mode / alt screen / kitty
         int selected = 0;
+        float rate = 1.0f;  // rate mod（暫時性，不存檔，每次啟動為 1.0x）
         while (true) {
-            const int choice = runMenu(term, entries, selected, settings.musicVolume, scores);
+            const int choice =
+                runMenu(term, entries, selected, settings.musicVolume, rate, scores);
             if (choice == kMenuQuit) break;
             if (choice == kMenuSettings) {
                 runSettings(term, settings);
@@ -1074,8 +1144,12 @@ int main(int argc, char* argv[]) {
                 SetSoundVolume(hit, settings.effectVolume);  // 套用新音效音量
                 continue;
             }
+            if (choice == kMenuMods) {
+                runModMenu(term, rate);
+                continue;
+            }
             const float prevSpeed = settings.scrollSpeed;
-            playSong(term, entries[choice], settings, hit, scores);
+            playSong(term, entries[choice], settings, hit, scores, rate);
             if (settings.scrollSpeed != prevSpeed)  // F3/F4 調過則存回
                 saveSettings(settings, kConfigFile);
         }

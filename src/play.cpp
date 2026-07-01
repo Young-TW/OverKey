@@ -39,7 +39,7 @@ void SongClock::tick(double frameDeltaMs, double audioPosMs) {
         return;
     }
 
-    timeMs_ += frameDeltaMs;  // 等速前進（恆定速度，避免速度脈動）
+    timeMs_ += frameDeltaMs * rate_;  // 等速前進（恆定速度，避免速度脈動；rate mod 縮放）
     // 僅在大幅失準（卡頓 / seek / 音訊量化以外的真正漂移）才硬對齊；
     // 平時不做連續微調，否則音訊位置每 ~75ms 跳動會造成 ~13Hz 速度抖動。
     if (audioPosMs >= 0.0 && std::abs(audioPosMs - timeMs_) > 100.0) {

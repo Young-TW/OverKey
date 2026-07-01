@@ -107,7 +107,8 @@ std::vector<Entry> scanMaps(const fs::path& dir) {
              dir, fs::directory_options::skip_permission_denied, ec);
          !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
         const auto& p = it->path();
-        if (p.extension() == ".osu" && probeBeatmap(p).isSupported()) {
+        if ((p.extension() == ".osu" || p.extension() == ".qua") &&
+            probeBeatmap(p).isSupported()) {
             out.push_back({p, p.lexically_relative(dir).replace_extension("").string()});
         }
     }

@@ -55,12 +55,17 @@ Produces two executables in `build/`:
 
 ### Maps
 
-Point the game at a folder of osu!mania `.osu` files (4K or 7K); non-mania and other
-key counts are filtered out automatically. `.osz` files are zip archives — extract one
-into a folder and point the game at it:
+Point the game at a folder of beatmaps (4K or 7K); non-mania and other key counts are
+filtered out automatically. Both formats are supported:
+
+- **osu!mania** `.osu` (archives: `.osz`)
+- **Quaver** `.qua` (archives: `.qp`)
+
+Archives are just zip files — extract one into a folder and point the game at it:
 
 ```bash
-unzip "Some Song.osz" -d maps/SomeSong
+unzip "Some Song.osz" -d maps/SomeSong    # osu
+unzip "12345.qp"      -d maps/SomeQuaver  # quaver
 ```
 
 > osu! **lazer** stores beatmaps in a hashed content store (no `.osu` files), so it is

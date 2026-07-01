@@ -4,6 +4,7 @@
 #include <vector>
 #include <string>
 #include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <system_error>
 
@@ -26,10 +27,171 @@ std::string keyValue(const std::string& line) {
     return trim(line.substr(pos + 1));
 }
 
+// ---- Quaver .qua（YAML 子集）----
+
+bool isQua(const std::filesystem::path& p) {
+    std::string e = p.extension().string();
+    for (char& c : e) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return e == ".qua";
+}
+
+std::string stripQuotes(std::string v) {
+    if (v.size() >= 2 && (v.front() == '\'' || v.front() == '"') && v.back() == v.front())
+        return v.substr(1, v.size() - 2);
+    return v;
+}
+
+// "Keys4" → 4、"Keys7" → 7
+int quaKeyCount(const std::string& modeVal) {
+    std::string digits;
+    for (char c : modeVal)
+        if (c >= '0' && c <= '9') digits += c;
+    try {
+        return digits.empty() ? 0 : std::stoi(digits);
+    } catch (...) {
+        return 0;
+    }
+}
+
+// 頂層 key（無縮排、非清單項）
+bool isTopKey(const std::string& raw) {
+    return !raw.empty() && raw[0] != ' ' && raw[0] != '\t' && raw[0] != '-';
+}
+
+Beatmap loadBeatmapQua(const std::filesystem::path& filename) {
+    Beatmap map;
+    std::ifstream file(filename);
+    if (!file.is_open()) {
+        std::cerr << "無法打開檔案: " << filename << std::endl;
+        return map;
+    }
+
+    std::string line;
+    bool inHit = false;
+    int keyCount = 0;
+    bool active = false;
+    int start = 0, lane = -1, end = -1;
+    auto flush = [&] {
+        if (active && lane >= 1) {
+            const int k = keyCount > 0 ? keyCount : 4;
+            map.notes.push_back({std::clamp(lane - 1, 0, k - 1), start, end});
+        }
+        active = false;
+        lane = -1;
+        end = -1;
+    };
+
+    while (std::getline(file, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.empty()) continue;
+
+        if (isTopKey(line)) {
+            flush();
+            const std::string t = trim(line);
+            if (t.rfind("AudioFile:", 0) == 0) map.audioFilename = stripQuotes(keyValue(t));
+            else if (t.rfind("Title:", 0) == 0) map.title = stripQuotes(keyValue(t));
+            else if (t.rfind("Mode:", 0) == 0) keyCount = quaKeyCount(keyValue(t));
+            inHit = (t.rfind("HitObjects:", 0) == 0);
+            continue;
+        }
+        if (!inHit) continue;
+
+        std::string t = trim(line);
+        if (t.rfind("- ", 0) == 0 || t == "-") {  // 新的 hit object
+            flush();
+            active = true;
+            t = trim(t.substr(1));
+            if (t.empty()) continue;
+        }
+        if (!active) continue;
+        if (t.rfind("StartTime:", 0) == 0) {
+            try { start = std::stoi(keyValue(t)); } catch (...) {}
+        } else if (t.rfind("Lane:", 0) == 0) {
+            try { lane = std::stoi(keyValue(t)); } catch (...) {}
+        } else if (t.rfind("EndTime:", 0) == 0) {
+            try { end = std::stoi(keyValue(t)); } catch (...) {}
+        }
+    }
+    flush();
+    if (keyCount > 0) map.keyCount = keyCount;
+    return map;
+}
+
+BeatmapInfo loadBeatmapInfoQua(const std::filesystem::path& filename) {
+    BeatmapInfo info;
+    info.mode = 3;  // Quaver 全為 mania
+    std::ifstream file(filename);
+    if (!file.is_open()) return info;
+
+    std::string line;
+    bool inHit = false;
+    bool active = false;
+    int start = 0, end = -1;
+    auto flush = [&] {
+        if (active) {
+            ++info.noteCount;
+            info.lengthMs = std::max(info.lengthMs, std::max(start, end));
+        }
+        active = false;
+        end = -1;
+    };
+
+    while (std::getline(file, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.empty()) continue;
+        if (isTopKey(line)) {
+            flush();
+            const std::string t = trim(line);
+            if (t.rfind("AudioFile:", 0) == 0) info.audioFilename = stripQuotes(keyValue(t));
+            else if (t.rfind("Title:", 0) == 0) info.title = stripQuotes(keyValue(t));
+            else if (t.rfind("Artist:", 0) == 0) info.artist = stripQuotes(keyValue(t));
+            else if (t.rfind("DifficultyName:", 0) == 0) info.version = stripQuotes(keyValue(t));
+            else if (t.rfind("Mode:", 0) == 0) info.keyCount = quaKeyCount(keyValue(t));
+            else if (t.rfind("SongPreviewTime:", 0) == 0) {
+                try { info.previewTimeMs = std::stoi(keyValue(t)); } catch (...) {}
+            }
+            inHit = (t.rfind("HitObjects:", 0) == 0);
+            continue;
+        }
+        if (!inHit) continue;
+        std::string t = trim(line);
+        if (t.rfind("- ", 0) == 0 || t == "-") {
+            flush();
+            active = true;
+            t = trim(t.substr(1));
+            if (t.empty()) continue;
+        }
+        if (!active) continue;
+        if (t.rfind("StartTime:", 0) == 0) {
+            try { start = std::stoi(keyValue(t)); } catch (...) {}
+        } else if (t.rfind("EndTime:", 0) == 0) {
+            try { end = std::stoi(keyValue(t)); } catch (...) {}
+        }
+    }
+    flush();
+    return info;
+}
+
+BeatmapHeader probeBeatmapQua(const std::filesystem::path& filename) {
+    BeatmapHeader h;
+    h.mode = 3;  // Quaver 全為 mania
+    std::ifstream file(filename);
+    if (!file.is_open()) return h;
+    std::string line;
+    while (std::getline(file, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        const std::string t = trim(line);
+        if (t.rfind("Mode:", 0) == 0) h.keyCount = quaKeyCount(keyValue(t));
+        else if (t.rfind("HitObjects:", 0) == 0) break;  // 檔頭讀完
+    }
+    return h;
+}
+
 }  // namespace
 
-// 解析整張 osu!mania 7K 譜面
+// 解析整張譜面（依副檔名分派 osu / quaver）
 Beatmap loadBeatmap(const std::filesystem::path& filename) {
+    if (isQua(filename)) return loadBeatmapQua(filename);
     Beatmap map;
     std::ifstream file(filename);
     if (!file.is_open()) {
@@ -100,6 +262,7 @@ std::vector<ManiaNote> parse7K(const std::filesystem::path& filename) {
 }
 
 BeatmapInfo loadBeatmapInfo(const std::filesystem::path& filename) {
+    if (isQua(filename)) return loadBeatmapInfoQua(filename);
     BeatmapInfo info;
     std::ifstream file(filename);
     if (!file.is_open()) return info;
@@ -172,6 +335,7 @@ std::filesystem::path findHitSound(const std::filesystem::path& mapDir) {
 }
 
 BeatmapHeader probeBeatmap(const std::filesystem::path& filename) {
+    if (isQua(filename)) return probeBeatmapQua(filename);
     BeatmapHeader h;
     std::ifstream file(filename);
     if (!file.is_open()) return h;

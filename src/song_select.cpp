@@ -33,7 +33,8 @@ SongSelect::SongSelect(std::filesystem::path mapsDir) : mapsDir_(std::move(mapsD
                  mapsDir_, std::filesystem::directory_options::skip_permission_denied, ec);
              !ec && it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
             const auto& p = it->path();
-            if (p.extension() == ".osu" && probeBeatmap(p).isSupported()) {
+            if ((p.extension() == ".osu" || p.extension() == ".qua") &&
+                probeBeatmap(p).isSupported()) {
                 std::filesystem::path rel = p.lexically_relative(mapsDir_);
                 std::string label = rel.replace_extension("").string();
                 entries_.push_back({p, std::move(label)});

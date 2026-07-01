@@ -97,6 +97,45 @@ void testMapParsing() {
     CHECK(findHitSound(dir) == dir / "normal-hitnormal.wav");  // normal 優先於 drum
 }
 
+void testQuaParsing() {
+    std::printf("quaver .qua parsing\n");
+    const fs::path dir = fs::temp_directory_path() / "overkey_test";
+    fs::create_directories(dir);
+    const fs::path p = dir / "test.qua";
+    {
+        std::ofstream f(p, std::ios::trunc);
+        f << "AudioFile: song.mp3\n"
+          << "SongPreviewTime: 4200\n"
+          << "Mode: Keys4\n"
+          << "Title: MyTitle\n"
+          << "Artist: MyArtist\n"
+          << "DifficultyName: Insane\n"
+          << "TimingPoints:\n- StartTime: 0\n  Bpm: 120\n"
+          << "HitObjects:\n"
+          << "- StartTime: 1000\n  Lane: 1\n"
+          << "- StartTime: 1200\n  Lane: 4\n"
+          << "- StartTime: 1400\n  Lane: 2\n  EndTime: 1800\n";  // 長押
+    }
+    const Beatmap bm = loadBeatmap(p);
+    CHECK(bm.keyCount == 4);
+    CHECK(bm.audioFilename == "song.mp3");
+    CHECK(bm.notes.size() == 3);
+    CHECK(bm.notes[0].column == 0);   // Lane 1 → column 0
+    CHECK(bm.notes[1].column == 3);   // Lane 4 → column 3
+    CHECK(bm.notes[2].column == 1 && bm.notes[2].endTime == 1800);
+
+    const BeatmapInfo info = loadBeatmapInfo(p);
+    CHECK(info.mode == 3 && info.keyCount == 4);
+    CHECK(info.title == "MyTitle" && info.artist == "MyArtist" && info.version == "Insane");
+    CHECK(info.noteCount == 3);
+    CHECK(info.lengthMs == 1800);       // 長押尾
+    CHECK(info.previewTimeMs == 4200);
+    CHECK(info.audioFilename == "song.mp3");
+
+    const BeatmapHeader h = probeBeatmap(p);
+    CHECK(h.mode == 3 && h.keyCount == 4 && h.isSupported());
+}
+
 // 單一普通音符，測不同按壓時間的判定等級
 Judgment judgeTapAt(int noteTime, double pressTime) {
     PlaySession s(std::vector<ManiaNote>{{0, noteTime, -1}});
@@ -212,6 +251,7 @@ void testScores() {
 
 int main() {
     testMapParsing();
+    testQuaParsing();
     testJudgmentTiers();
     testScoringAndMiss();
     testLongNote();

@@ -559,9 +559,9 @@ int toStoredKey(int kittyCode) {
 void runSettings(Terminal& term, Settings& settings) {
     PixelCanvas canvas(term.cols(), term.rows());
     std::string out;
-    constexpr int k7kBase = 5;             // 前 5 項為數值欄位
-    constexpr int k4kBase = k7kBase + 7;   // 12
-    constexpr int kFields = k4kBase + 4;   // 16
+    constexpr int k7kBase = 6;             // 前 6 項為數值欄位
+    constexpr int k4kBase = k7kBase + 7;   // 13
+    constexpr int kFields = k4kBase + 4;   // 17
     int selected = 0;
     int rebinding = -1;
     // 欄位索引 → 對應 keybind 槽（nullptr 表非鍵位欄位）
@@ -605,6 +605,8 @@ void runSettings(Terminal& term, Settings& settings) {
                 settings.effectVolume = std::clamp(settings.effectVolume + dir * 0.05f, 0.0f, 1.0f);
             else if (selected == 4 && dir)
                 settings.noteScale = std::clamp(settings.noteScale + dir * 0.1f, 0.5f, 3.0f);
+            else if (selected == 5 && dir)
+                settings.roundNotes = !settings.roundNotes;
             else if (selected >= k7kBase && (e.code == 13 || e.code == 32))
                 rebinding = selected;
         }
@@ -629,6 +631,7 @@ void runSettings(Terminal& term, Settings& settings) {
         row(3, "Effect volume", buf, y++);
         std::snprintf(buf, sizeof(buf), "%.1fx", settings.noteScale);
         row(4, "Note height", buf, y++);
+        row(5, "Note shape (GUI)", settings.roundNotes ? "Round" : "Bar", y++);
         ++y;
         canvas.putText(4, y++, "7K KEYBINDS", kGray);
         for (int i = 0; i < 7; ++i) {

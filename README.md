@@ -30,6 +30,12 @@ logic core**: a graphical version (raylib) and a terminal version (TUI). Support
 - TUI: solid eighth-block rendering (rows×8 vertical resolution), Kitty keyboard
   protocol for key-release (needed for long notes), synchronized output for smoothness.
 
+## Download
+
+Prebuilt Linux packages (`.tar.gz` / `.zip` / `.deb`) are attached to each
+[GitHub Release](https://github.com/Young-TW/OverKey/releases). They dynamically link
+X11/OpenGL/ALSA, so a normal desktop Linux has what they need.
+
 ## Build
 
 Requires CMake ≥ 3.20 and a C++23 compiler. raylib is fetched automatically via

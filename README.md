@@ -51,6 +51,14 @@ Produces two executables in `build/`:
 - `OverKey` — graphical (raylib) frontend
 - `overkey-tui` — terminal frontend
 
+The two frontends can be built separately with the `OVERKEY_BUILD_GUI` /
+`OVERKEY_BUILD_TUI` options (both `ON` by default):
+
+```bash
+cmake -S . -B build -DOVERKEY_BUILD_GUI=OFF   # TUI only
+cmake -S . -B build -DOVERKEY_BUILD_TUI=OFF   # GUI only
+```
+
 ## Run
 
 ```bash

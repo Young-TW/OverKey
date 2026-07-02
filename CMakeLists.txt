@@ -4,9 +4,26 @@ project(OverKey VERSION 0.1.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-include(FetchContent)
+# 兩個前端可分開編譯：-DOVERKEY_BUILD_GUI=OFF 只編 TUI，反之亦然。
+option(OVERKEY_BUILD_GUI "Build the GUI frontend (raylib window)" ON)
+option(OVERKEY_BUILD_TUI "Build the TUI frontend (terminal)" ON)
 
-# raylib：視窗/2D繪圖/音訊/輸入框架，用 FetchContent 直接拉，免系統安裝
+if(NOT OVERKEY_BUILD_GUI AND NOT OVERKEY_BUILD_TUI)
+    message(FATAL_ERROR
+        "至少要開啟一個前端：OVERKEY_BUILD_GUI 或 OVERKEY_BUILD_TUI")
+endif()
+
+# 前端無關的遊玩 core（GUI 與 TUI 共用）。純邏輯 + 設定檔讀寫，不依賴 raylib。
+add_library(overkey_core STATIC
+    src/map.cpp
+    src/play.cpp
+    src/settings.cpp
+    src/scores.cpp
+)
+target_include_directories(overkey_core PUBLIC ./include)
+
+# raylib：GUI 需視窗/繪圖/音訊，TUI 僅需音訊；兩個前端都要用，用 FetchContent 直接拉。
+include(FetchContent)
 set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(BUILD_GAMES OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(
@@ -18,32 +35,31 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(raylib)
 
-# 前端無關的遊玩 core（GUI 與 TUI 共用）。settings.cpp 含 raylib 設定畫面，故連結 raylib。
-add_library(overkey_core STATIC
-    src/map.cpp
-    src/play.cpp
-    src/settings.cpp
-    src/scores.cpp
-)
-target_include_directories(overkey_core PUBLIC ./include)
-target_link_libraries(overkey_core PUBLIC raylib)
+set(OVERKEY_INSTALL_TARGETS "")
 
-# GUI 前端（raylib 視窗）
-add_executable(${PROJECT_NAME}
-    src/main.cpp
-    src/game.cpp
-    src/song_select.cpp
-)
-target_link_libraries(${PROJECT_NAME} PRIVATE overkey_core)
+# GUI 前端（raylib 視窗）；設定畫面（settings_screen.cpp）僅 GUI 使用。
+if(OVERKEY_BUILD_GUI)
+    add_executable(${PROJECT_NAME}
+        src/main.cpp
+        src/game.cpp
+        src/song_select.cpp
+        src/settings_screen.cpp
+    )
+    target_link_libraries(${PROJECT_NAME} PRIVATE overkey_core raylib)
+    list(APPEND OVERKEY_INSTALL_TARGETS ${PROJECT_NAME})
+endif()
 
 # TUI 前端（終端機；raylib 僅用於音訊，免視窗）
-add_executable(overkey-tui
-    src/tui_main.cpp
-    src/tui.cpp
-)
-target_link_libraries(overkey-tui PRIVATE overkey_core)
+if(OVERKEY_BUILD_TUI)
+    add_executable(overkey-tui
+        src/tui_main.cpp
+        src/tui.cpp
+    )
+    target_link_libraries(overkey-tui PRIVATE overkey_core raylib)
+    list(APPEND OVERKEY_INSTALL_TARGETS overkey-tui)
+endif()
 
-install(TARGETS ${PROJECT_NAME} overkey-tui)
+install(TARGETS ${OVERKEY_INSTALL_TARGETS})
 install(FILES README.md DESTINATION share/doc/OverKey)
 
 # 測試：只編 raylib-free 的 core 原始碼，headless 可跑

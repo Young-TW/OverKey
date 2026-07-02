@@ -11,7 +11,9 @@
 *.out
 *.exe
 
-/maps
+# 使用者自己的圖譜不追蹤，但保留一份內建範例譜（首次啟動就有東西可打）
+/maps/*
+!/maps/OverKey Sample/
 
 /overkey.cfg
 /overkey-scores.txt

@@ -79,6 +79,10 @@ required either way.
 
 ### Maps
 
+The repo ships one bundled chart, **`maps/OverKey Sample/7K Tutorial.osu`** — a short
+7K pattern with no audio or background, so the game has something to play on first
+launch. Drop your own beatmaps into `maps/` alongside it (they stay out of git).
+
 Point the game at a folder of beatmaps (4K or 7K); non-mania and other key counts are
 filtered out automatically. Both formats are supported:
 

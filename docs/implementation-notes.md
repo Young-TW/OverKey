@@ -72,6 +72,32 @@ Two things the TUI main loop must therefore never do:
 suspect main-thread work in the *adopt* step (seek / unload / large write), not
 the load itself.
 
+## Headless TUI — raylib-free build (`OVERKEY_HEADLESS`)
+
+The TUI used raylib only for **audio** (music + hit sounds) and **image**
+handling (Kitty cover art / round-note PNGs). But raylib's CMake always builds
+its full GLFW/OpenGL/X11 stack, so even a "TUI only" build failed on headless
+machines (`OPENGL_INCLUDE_DIR NOTFOUND` on a compute cluster).
+
+Fix: a small raylib-compatible shim (`include/rl_compat.h` + `src/rl_compat.cpp`)
+that reimplements exactly the raylib audio/image API the TUI uses, over
+[miniaudio](https://github.com/mackron/miniaudio) (audio) and
+[stb](https://github.com/nothings/stb) (`stb_image` / `stb_image_write` /
+`stb_image_resize2`, plus `stb_vorbis` for Ogg, which miniaudio doesn't bundle).
+Types/signatures match raylib so `tui_main.cpp` only changes its `#include`.
+When `OVERKEY_HEADLESS` is defined, `raii.h` pulls the shim instead of
+`<raylib.h>` and compiles out the window/texture wrappers. The TUI target links
+**no raylib** — its binary needs only libstdc++/m/c (ALSA/PulseAudio are
+`dlopen`ed by miniaudio at runtime).
+
+**Bonus:** the shim **fully decodes** each track to PCM up front (mp3/wav/flac
+via `ma_decoder`, ogg via stb_vorbis) and plays it through a `ma_audio_buffer` on
+the miniaudio engine. That makes `SeekMusicStream` an **O(1) PCM-frame jump** —
+the "MP3 has no seek table" stall below simply cannot happen on the TUI anymore
+(the async-adopt machinery still stands but the seek itself is now free). Cost:
+~30 MB RAM for a decoded 3-minute stereo track, fine anywhere. `UpdateMusicStream`
+is a no-op because the engine mixes on its own thread.
+
 ## raylib input polling (GUI)
 
 raylib polls input inside `EndDrawing()` (our `vp.end()`).

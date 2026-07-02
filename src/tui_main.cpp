@@ -13,7 +13,7 @@
 #include <thread>
 #include <vector>
 
-#include <raylib.h>
+#include "rl_compat.h"  // raylib 音訊/影像子集（miniaudio + stb），免 OpenGL/X11
 
 #include "map.h"
 #include "play.h"

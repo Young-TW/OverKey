@@ -38,8 +38,9 @@ X11/OpenGL/ALSA, so a normal desktop Linux has what they need.
 
 ## Build
 
-Requires CMake ≥ 3.20 and a C++23 compiler. raylib is fetched automatically via
-`FetchContent` (no system install needed).
+Requires CMake ≥ 3.20 and a C++23 compiler. All dependencies (raylib for the GUI;
+miniaudio + stb for the TUI) are fetched automatically via `FetchContent` — no
+system install needed.
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -58,6 +59,15 @@ The two frontends can be built separately with the `OVERKEY_BUILD_GUI` /
 cmake -S . -B build -DOVERKEY_BUILD_GUI=OFF   # TUI only
 cmake -S . -B build -DOVERKEY_BUILD_TUI=OFF   # GUI only
 ```
+
+The **GUI** depends on raylib (window/graphics/audio), which needs OpenGL and
+X11 to build. The **TUI** is fully headless: its audio comes from
+[miniaudio](https://github.com/mackron/miniaudio) and its image handling (for
+the Kitty cover art) from [stb](https://github.com/nothings/stb), so a
+`-DOVERKEY_BUILD_GUI=OFF` build has **no OpenGL / X11 / raylib dependency** and
+compiles on headless machines (e.g. compute clusters). Both fetch their
+dependencies automatically; a C++23 compiler (GCC ≥ 13 / Clang ≥ 17) is
+required either way.
 
 ## Run
 

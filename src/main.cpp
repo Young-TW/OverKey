@@ -1,4 +1,4 @@
-#include <print>
+#include <cstdio>
 #include <utility>
 
 #include <raylib.h>
@@ -42,7 +42,7 @@ int main(int argc, char* argv[]) {
         // MenuAction::Play
         Beatmap map = loadBeatmap(choice.path);
         if (map.notes.empty()) {
-            std::println("沒有讀到任何音符: {}", choice.path.string());
+            std::fprintf(stderr, "沒有讀到任何音符: %s\n", choice.path.string().c_str());
             continue;
         }
 

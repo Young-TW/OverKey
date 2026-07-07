@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "map.h"
+#include "map_import.h"
 #include "scores.h"
 
 class Viewport;
@@ -37,8 +38,11 @@ private:
     void draw() const;
     void clampScroll();
     void ensureSelectedInfo();  // 確保目前選取項的摘要已載入
+    bool makeEntry(const std::filesystem::path& p, Entry& out) const;  // 探測+標籤，不支援回傳 false
+    void ingestNewMaps();       // 撈背景匯入器新解出的譜面，插進清單（保留目前選取）
 
     std::filesystem::path mapsDir_;
+    MapImporter importer_;  // 背景解壓 .osz/.qp
     std::vector<Entry> entries_;
     const ScoreBook* scores_ = nullptr;  // 詳情面板顯示最佳成績用（run 期間有效）
     int selected_ = 0;

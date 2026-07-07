@@ -26,24 +26,57 @@ std::string ellipsize(const std::string& s, int fontSize, int maxW) {
 }
 }  // namespace
 
-SongSelect::SongSelect(std::filesystem::path mapsDir) : mapsDir_(std::move(mapsDir)) {
+SongSelect::SongSelect(std::filesystem::path mapsDir)
+    : mapsDir_(std::move(mapsDir)), importer_(mapsDir_) {
     std::error_code ec;
     if (std::filesystem::is_directory(mapsDir_, ec)) {
         for (auto it = std::filesystem::recursive_directory_iterator(
                  mapsDir_, std::filesystem::directory_options::skip_permission_denied, ec);
              !ec && it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
-            const auto& p = it->path();
-            if (p.extension() != ".osu" && p.extension() != ".qua") continue;
-            const BeatmapHeader h = probeBeatmap(p);
-            if (!h.isSupported()) continue;
-            // 優先用譜面標題，缺 metadata 時退回相對路徑
-            std::string label = h.label();
-            if (label.empty()) label = p.lexically_relative(mapsDir_).replace_extension("").string();
-            entries_.push_back({p, std::move(label)});
+            Entry e;
+            if (makeEntry(it->path(), e)) entries_.push_back(std::move(e));
         }
     }
     std::sort(entries_.begin(), entries_.end(),
               [](const Entry& a, const Entry& b) { return a.label < b.label; });
+    importer_.start();  // 開背景執行緒掃描/解壓 .osz/.qp，執行期間增量餵進清單
+}
+
+bool SongSelect::makeEntry(const std::filesystem::path& p, Entry& out) const {
+    if (p.extension() != ".osu" && p.extension() != ".qua") return false;
+    const BeatmapHeader h = probeBeatmap(p);
+    if (!h.isSupported()) return false;
+    // 優先用譜面標題，缺 metadata 時退回相對路徑
+    std::string label = h.label();
+    if (label.empty()) label = p.lexically_relative(mapsDir_).replace_extension("").string();
+    out = Entry{p, std::move(label), std::nullopt};
+    return true;
+}
+
+void SongSelect::ingestNewMaps() {
+    std::vector<std::filesystem::path> fresh = importer_.drainNewMaps();
+    if (fresh.empty()) return;
+
+    // 重排會打亂索引，先記住目前選取項的路徑，插完再依路徑還原選取。
+    const std::filesystem::path selPath =
+        entries_.empty() ? std::filesystem::path{} : entries_[selected_].path;
+
+    for (const auto& p : fresh) {
+        if (std::any_of(entries_.begin(), entries_.end(),
+                        [&](const Entry& e) { return e.path == p; }))
+            continue;  // 與初次掃描重複則略過
+        Entry e;
+        if (makeEntry(p, e)) entries_.push_back(std::move(e));
+    }
+    std::sort(entries_.begin(), entries_.end(),
+              [](const Entry& a, const Entry& b) { return a.label < b.label; });
+
+    if (!selPath.empty()) {
+        const auto it = std::find_if(entries_.begin(), entries_.end(),
+                                     [&](const Entry& e) { return e.path == selPath; });
+        if (it != entries_.end()) selected_ = static_cast<int>(it - entries_.begin());
+    }
+    clampScroll();
 }
 
 void SongSelect::clampScroll() {
@@ -68,6 +101,7 @@ MenuResult SongSelect::run(Viewport& vp, float musicVolume, const ScoreBook& sco
     int lastSel = selected_;
 
     while (!WindowShouldClose()) {
+        ingestNewMaps();  // 背景解壓的新譜面即時進清單
         if (IsKeyPressed(KEY_F11)) ToggleBorderlessWindowed();
         if (!entries_.empty()) {
             if (IsKeyPressed(KEY_DOWN)) ++selected_;

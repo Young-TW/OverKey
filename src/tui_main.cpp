@@ -16,6 +16,7 @@
 #include "rl_compat.h"  // raylib 音訊/影像子集（miniaudio + stb），免 OpenGL/X11
 
 #include "map.h"
+#include "map_import.h"
 #include "play.h"
 #include "raii.h"
 #include "scores.h"
@@ -104,6 +105,17 @@ struct Entry {
     std::string label;
 };
 
+// 探測單一譜面檔；支援（mania 4K/7K）則填入 out 回傳 true。
+bool tryMakeEntry(const fs::path& dir, const fs::path& p, Entry& out) {
+    if (p.extension() != ".osu" && p.extension() != ".qua") return false;
+    const BeatmapHeader h = probeBeatmap(p);
+    if (!h.isSupported()) return false;
+    std::string label = h.label();
+    if (label.empty()) label = p.lexically_relative(dir).replace_extension("").string();
+    out = Entry{p, std::move(label)};
+    return true;
+}
+
 std::vector<Entry> scanMaps(const fs::path& dir) {
     std::vector<Entry> out;
     std::error_code ec;
@@ -111,17 +123,34 @@ std::vector<Entry> scanMaps(const fs::path& dir) {
     for (auto it = fs::recursive_directory_iterator(
              dir, fs::directory_options::skip_permission_denied, ec);
          !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
-        const auto& p = it->path();
-        if (p.extension() != ".osu" && p.extension() != ".qua") continue;
-        const BeatmapHeader h = probeBeatmap(p);
-        if (!h.isSupported()) continue;
-        std::string label = h.label();
-        if (label.empty()) label = p.lexically_relative(dir).replace_extension("").string();
-        out.push_back({p, std::move(label)});
+        Entry e;
+        if (tryMakeEntry(dir, it->path(), e)) out.push_back(std::move(e));
     }
     std::sort(out.begin(), out.end(),
               [](const Entry& a, const Entry& b) { return a.label < b.label; });
     return out;
+}
+
+// 撈背景匯入器新解出的譜面插進清單（保留目前選取項），供選單迴圈每幀呼叫。
+void ingestNewMaps(MapImporter& importer, const fs::path& dir, std::vector<Entry>& entries,
+                   int& selected) {
+    std::vector<fs::path> fresh = importer.drainNewMaps();
+    if (fresh.empty()) return;
+    const fs::path selPath = entries.empty() ? fs::path{} : entries[selected].path;
+    for (const auto& p : fresh) {
+        if (std::any_of(entries.begin(), entries.end(),
+                        [&](const Entry& e) { return e.path == p; }))
+            continue;
+        Entry e;
+        if (tryMakeEntry(dir, p, e)) entries.push_back(std::move(e));
+    }
+    std::sort(entries.begin(), entries.end(),
+              [](const Entry& a, const Entry& b) { return a.label < b.label; });
+    if (!selPath.empty()) {
+        const auto it = std::find_if(entries.begin(), entries.end(),
+                                     [&](const Entry& e) { return e.path == selPath; });
+        if (it != entries.end()) selected = static_cast<int>(it - entries.begin());
+    }
 }
 
 constexpr auto kFramePeriod = std::chrono::microseconds(1000000 / 1000);  // 目標 1000fps
@@ -311,7 +340,7 @@ struct CoverResult {
 
 // 回傳 kMenuQuit=離開、kMenuSettings=設定，否則為選擇的 index
 int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float musicVolume,
-            float rate, const ScoreBook& scores) {
+            float rate, const ScoreBook& scores, MapImporter& importer, const fs::path& mapsDir) {
     PixelCanvas canvas(term.cols(), term.rows());
     std::string out;
     Loader loader;  // 常駐背景載入執行緒
@@ -358,6 +387,8 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
         term.refreshSize();
         if (canvas.cols() != term.cols() || canvas.rows() != term.rows())
             canvas.resize(term.cols(), term.rows());
+
+        ingestNewMaps(importer, mapsDir, entries, selected);  // 背景解壓的新譜面即時進清單
 
         for (const KeyEvent& e : term.poll()) {
             if (e.type != KeyEvent::Press) continue;
@@ -1124,6 +1155,8 @@ int main(int argc, char* argv[]) {
     Settings settings = loadSettings(kConfigFile);
     ScoreBook scores{kScoresFile};
     std::vector<Entry> entries = scanMaps(mapsDir);
+    MapImporter importer{mapsDir};  // 背景解壓 .osz/.qp，選單執行期間增量餵進 entries
+    importer.start();
 
     SetTraceLogLevel(LOG_NONE);  // 避免 raylib 訊息汙染終端機畫面
     InitAudioDevice();
@@ -1135,8 +1168,8 @@ int main(int argc, char* argv[]) {
         int selected = 0;
         float rate = 1.0f;  // rate mod（暫時性，不存檔，每次啟動為 1.0x）
         while (true) {
-            const int choice =
-                runMenu(term, entries, selected, settings.musicVolume, rate, scores);
+            const int choice = runMenu(term, entries, selected, settings.musicVolume, rate,
+                                       scores, importer, mapsDir);
             if (choice == kMenuQuit) break;
             if (choice == kMenuSettings) {
                 runSettings(term, settings);

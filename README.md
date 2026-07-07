@@ -39,8 +39,8 @@ X11/OpenGL/ALSA, so a normal desktop Linux has what they need.
 ## Build
 
 Requires CMake ≥ 3.20 and a C++23 compiler. All dependencies (raylib for the GUI;
-miniaudio + stb for the TUI) are fetched automatically via `FetchContent` — no
-system install needed.
+miniaudio + stb for the TUI; miniz for archive unpacking in the shared core) are
+fetched automatically via `FetchContent` — no system install needed.
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -89,7 +89,14 @@ filtered out automatically. Both formats are supported:
 - **osu!mania** `.osu` (archives: `.osz`)
 - **Quaver** `.qua` (archives: `.qp`)
 
-Archives are just zip files — extract one into a folder and point the game at it:
+**Just drop the archive in.** On launch the game spawns a background thread that scans
+`maps/` for `.osz`/`.qp` packages and unpacks each into a sibling folder (`My Song.osz`
+→ `My Song/`). It's **incremental**: every package appears in the song list the moment it
+finishes extracting — no need to restart, and you can drop archives in before launch. The
+original archive is left untouched, and a package whose folder already exists is skipped
+(no re-extract, no overwrite), so it's safe to relaunch.
+
+You can still extract by hand if you prefer:
 
 ```bash
 unzip "Some Song.osz" -d maps/SomeSong    # osu
@@ -126,6 +133,7 @@ offset. Set it under `Tab → Audio offset` so judgment lines up with the music.
 ```
 include/play.h, src/play.cpp     core: PlaySession, SongClock, Judgment (no raylib)
 include/map.h,  src/map.cpp       .osu parsing: loadBeatmap / loadBeatmapInfo / probeBeatmap
+include/map_import.h, src/map_import.cpp  background .osz/.qp unpacker (MapImporter, miniz)
 include/settings.*                Settings struct + load/save + GUI settings screen
 include/game.h, src/game.cpp      GUI frontend over PlaySession
 src/song_select.cpp, src/main.cpp GUI menu + entry point

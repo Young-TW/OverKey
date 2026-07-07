@@ -21,14 +21,43 @@ endif()
 
 include(FetchContent)
 
+# ---- miniz（zip 解壓：.osz/.qp 壓縮圖譜包匯入用）----
+# 只下載原始碼、自行編譯：SOURCE_SUBDIR 指向沒有 CMakeLists 的 examples/，
+# 避免 MakeAvailable 把 miniz 自帶的 target/範例/安裝規則帶進來（同 miniaudio 手法）。
+FetchContent_Declare(
+    miniz
+    GIT_REPOSITORY https://github.com/richgel999/miniz.git
+    GIT_TAG 3.0.2
+    GIT_SHALLOW TRUE
+    SOURCE_SUBDIR examples
+)
+FetchContent_MakeAvailable(miniz)
+
+add_library(overkey_miniz STATIC
+    ${miniz_SOURCE_DIR}/miniz.c
+    ${miniz_SOURCE_DIR}/miniz_tinfl.c
+    ${miniz_SOURCE_DIR}/miniz_tdef.c
+    ${miniz_SOURCE_DIR}/miniz_zip.c
+)
+# miniz_export.h 平常由 CMake generate_export_header 產生；靜態連結給空定義即可，
+# 用 src/vendor/miniz_shim/ 內的替身標頭補上。
+target_include_directories(overkey_miniz PUBLIC
+    ${miniz_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/vendor/miniz_shim)
+
 # 前端無關的遊玩 core（GUI 與 TUI 共用）。純邏輯 + 設定檔讀寫，不依賴 raylib。
 add_library(overkey_core STATIC
     src/map.cpp
     src/play.cpp
     src/settings.cpp
     src/scores.cpp
+    src/map_import.cpp
 )
 target_include_directories(overkey_core PUBLIC ./include)
+# map_import 需要 std::thread；miniz 供 zip 解壓（僅 core 內部用，故 PRIVATE）。
+find_package(Threads REQUIRED)
+target_link_libraries(overkey_core PUBLIC Threads::Threads)
+target_link_libraries(overkey_core PRIVATE overkey_miniz)
 
 # ---- GUI 前端（raylib 視窗）----
 if(OVERKEY_BUILD_GUI)

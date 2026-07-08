@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/Young-TW/OverKey/actions/workflows/ci.yml/badge.svg)](https://github.com/Young-TW/OverKey/actions/workflows/ci.yml)
 
-A falling-rhythm game (osu!mania-style) in C++23, with **two frontends sharing one
+A falling-rhythm game (osu!mania-style) in C++20, with **two frontends sharing one
 logic core**: a graphical version (raylib) and a terminal version (TUI). Supports
 **4K and 7K** mania beatmaps in the `.osu` format.
 
@@ -38,9 +38,9 @@ X11/OpenGL/ALSA, so a normal desktop Linux has what they need.
 
 ## Build
 
-Requires CMake ≥ 3.20 and a C++23 compiler. All dependencies (raylib for the GUI;
-miniaudio + stb for the TUI; miniz for archive unpacking in the shared core) are
-fetched automatically via `FetchContent` — no system install needed.
+Requires CMake ≥ 3.20 and a C++20 compiler (GCC ≥ 10 / Clang ≥ 17). All dependencies
+(raylib for the GUI; miniaudio + stb for the TUI; miniz for archive unpacking in the
+shared core) are fetched automatically via `FetchContent` — no system install needed.
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -66,7 +66,7 @@ X11 to build. The **TUI** is fully headless: its audio comes from
 the Kitty cover art) from [stb](https://github.com/nothings/stb), so a
 `-DOVERKEY_BUILD_GUI=OFF` build has **no OpenGL / X11 / raylib dependency** and
 compiles on headless machines (e.g. compute clusters). Both fetch their
-dependencies automatically; a C++23 compiler (GCC ≥ 13 / Clang ≥ 17) is
+dependencies automatically; a C++20 compiler (GCC ≥ 10 / Clang ≥ 17) is
 required either way.
 
 ## Run

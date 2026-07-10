@@ -1,5 +1,7 @@
 #include <algorithm>
+#include <cmath>
 #include <optional>
+#include <string>
 #include <system_error>
 #include <utility>
 
@@ -88,9 +90,14 @@ void SongSelect::clampScroll() {
     scroll_ = std::max(0, scroll_);
 }
 
-MenuResult SongSelect::run(Viewport& vp, float musicVolume, const ScoreBook& scores) {
+MenuResult SongSelect::run(Viewport& vp, float musicVolume, const ScoreBook& scores,
+                           bool& autoPlay, float& rate) {
     SetWindowTitle("OverKey - Select Song");
     scores_ = &scores;
+
+    // 每幀同步 mod 旗標到成員，供 draw() 顯示指示器
+    auto syncMods = [&] { autoPlay_ = autoPlay; rate_ = rate; };
+    syncMods();
 
     std::optional<MusicRes> preview;        // 目前試聽
     std::filesystem::path previewPath;      // 正在播放的音訊檔（空＝無）
@@ -102,6 +109,7 @@ MenuResult SongSelect::run(Viewport& vp, float musicVolume, const ScoreBook& sco
 
     while (!WindowShouldClose()) {
         ingestNewMaps();  // 背景解壓的新譜面即時進清單
+        syncMods();
         if (IsKeyPressed(KEY_F11)) ToggleBorderlessWindowed();
         if (!entries_.empty()) {
             if (IsKeyPressed(KEY_DOWN)) ++selected_;
@@ -121,6 +129,9 @@ MenuResult SongSelect::run(Viewport& vp, float musicVolume, const ScoreBook& sco
             }
         }
         if (IsKeyPressed(KEY_TAB)) return {MenuAction::Settings, {}};
+        if (IsKeyPressed(KEY_M)) autoPlay = !autoPlay;  // 切換 auto-play
+        if (IsKeyPressed(KEY_LEFT)) rate = std::max(0.5f, std::round((rate - 0.05f) / 0.05f) * 0.05f);
+        if (IsKeyPressed(KEY_RIGHT)) rate = std::min(2.0f, std::round((rate + 0.05f) / 0.05f) * 0.05f);
         if (IsKeyPressed(KEY_ESCAPE)) return {MenuAction::Quit, {}};
 
         // 副歌試聽：停穩超過防抖時間後，只有「音訊檔不同」才重載
@@ -207,6 +218,22 @@ void SongSelect::draw() const {
     DrawText("OVERKEY", 40, 50, 56, RAYWHITE);
     DrawText("SELECT SONG", 42, 115, 24, GRAY);
 
+    {  // mod 指示器（右上角）
+        int mx = w - 40;
+        if (autoPlay_) {
+            const char* a = "AUTO";
+            mx -= MeasureText(a, 22);
+            DrawText(a, mx, 60, 22, GOLD);
+            mx -= 24;
+        }
+        if (rate_ != 1.0f) {
+            const char* r = TextFormat("%.2fx", rate_);
+            mx -= MeasureText(r, 22);
+            DrawText(r, mx, 60, 22, GOLD);
+            mx -= 24;
+        }
+    }
+
     if (entries_.empty()) {
         const char* msg = "找不到 mania 4K/7K 譜面（請確認 maps 目錄路徑）";
         DrawText(msg, w / 2 - MeasureText(msg, 28) / 2, kVirtualH / 2 - 14, 28, RED);
@@ -279,7 +306,8 @@ void SongSelect::draw() const {
     }
 
     const char* hint =
-        "UP/DOWN select   ENTER play   TAB settings   F11 fullscreen   ESC quit";
+        "UP/DOWN select   ENTER play   M auto   LEFT/RIGHT rate   "
+        "TAB settings   F11 fullscreen   ESC quit";
     DrawText(hint, w / 2 - MeasureText(hint, 22) / 2, kVirtualH - 55, 22,
              Fade(RAYWHITE, 0.6f));
 }

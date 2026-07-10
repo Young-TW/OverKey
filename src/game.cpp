@@ -76,12 +76,14 @@ Sound makeHitSound() {
 }  // namespace
 
 Game::Game(Beatmap map, std::filesystem::path audioPath, Settings settings,
-           ScoreRecord prevBest)
+           ScoreRecord prevBest, bool autoPlay, float rate)
     : map_(std::move(map)),
       audioPath_(std::move(audioPath)),
       settings_(settings),
       prevBest_(prevBest),
       session_(map_.notes),
+      autoPlay_(autoPlay),
+      rate_(rate),
       keyCount_(map_.keyCount == 4 ? 4 : 7),
       laneKeys_(keyCount_ == 4 ? settings_.keys4.data() : settings_.keys.data()),
       playfieldW_(keyCount_ * kLaneW),
@@ -97,7 +99,10 @@ void Game::run(Viewport& vp) {
 
     MusicRes music{audioPath_.string().c_str()};
     const bool haveMusic = music.valid();
-    if (haveMusic) SetMusicVolume(music.get(), settings_.musicVolume);
+    if (haveMusic) {
+        SetMusicVolume(music.get(), settings_.musicVolume);
+        if (rate_ != 1.0f) SetMusicPitch(music.get(), rate_);  // rate mod：改播放速度（音高一起變）
+    }
 
     // 優先用譜包自帶的打擊取樣，沒有才用合成音
     std::optional<SoundRes> hitSound;
@@ -110,6 +115,7 @@ void Game::run(Viewport& vp) {
     SetSoundVolume(hitSound->get(), settings_.effectVolume);
 
     SongClock clock{kLeadInMs};
+    clock.setRate(rate_);
     bool musicStarted = false;
     double songTimeMs = -kLeadInMs;
 
@@ -123,6 +129,7 @@ void Game::run(Viewport& vp) {
         phase_ = Phase::Playing;
         laneFlash_.fill(-10.0);
         clock = SongClock{kLeadInMs};
+        clock.setRate(rate_);
         musicStarted = false;
         songTimeMs = -kLeadInMs;
     };
@@ -181,12 +188,31 @@ void Game::run(Viewport& vp) {
 
             // 輸入 → core（跳過的那幀不處理軌道，避免空白鍵同時打到 lane）
             if (!didSkip) {
-                for (int c = 0; c < keyCount_; ++c) {
-                    if (IsKeyPressed(laneKeys_[c])) session_.press(c, songTimeMs);
-                    if (IsKeyReleased(laneKeys_[c])) session_.release(c, songTimeMs);
+                if (autoPlay_) {
+                    const auto& notes = session_.notes();
+                    for (std::size_t i = 0; i < notes.size(); ++i) {
+                        if (session_.stateOf(i) != NoteState::Idle) continue;
+                        const ManiaNote& n = notes[i];
+                        if (songTimeMs >= n.startTime) session_.press(n.column, n.startTime);
+                    }
+                } else {
+                    for (int c = 0; c < keyCount_; ++c) {
+                        if (IsKeyPressed(laneKeys_[c])) session_.press(c, songTimeMs);
+                        if (IsKeyReleased(laneKeys_[c])) session_.release(c, songTimeMs);
+                    }
                 }
             }
             session_.advance(songTimeMs);
+
+            // auto-play：長押到尾端自動放開
+            if (autoPlay_ && !didSkip) {
+                const auto& notes = session_.notes();
+                for (std::size_t i = 0; i < notes.size(); ++i) {
+                    if (session_.stateOf(i) != NoteState::Holding) continue;
+                    const ManiaNote& n = notes[i];
+                    if (songTimeMs >= n.endTime) session_.release(n.column, n.endTime);
+                }
+            }
 
             // core 事件 → 聲光
             bool anyHit = false;
@@ -329,6 +355,7 @@ void Game::drawPlayfield(double songTimeMs) const {
     // 下落速度：頂部到底部的毫秒（F3/F4 調整）
     DrawText(TextFormat("SPEED  %.1fx  %.0fms", settings_.scrollSpeed, kScreenH / pxPerMs_), 20,
              155, 18, Fade(RAYWHITE, 0.7f));
+    if (autoPlay_) DrawText("AUTO", 20, 178, 18, GOLD);
 
     const Judgment tiers[] = {Judgment::Perfect, Judgment::Great, Judgment::Good,
                               Judgment::Bad, Judgment::Miss};

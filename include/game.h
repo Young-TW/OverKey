@@ -15,11 +15,12 @@ class Viewport;
 class Game {
 public:
     Game(Beatmap map, std::filesystem::path audioPath, Settings settings,
-         ScoreRecord prevBest = {});
+         ScoreRecord prevBest = {}, bool autoPlay = false, float rate = 1.0f);
     void run(Viewport& vp);
 
     // 遊玩中以 F3/F4 調整後的下落速度，供呼叫端存回設定
     float scrollSpeed() const { return settings_.scrollSpeed; }
+    bool autoPlay() const { return autoPlay_; }
 
     bool completed() const { return phase_ == Phase::Result; }  // 是否打完（reach 結算）
     int finalScore() const { return session_.score(); }
@@ -40,6 +41,8 @@ private:
     Settings settings_;
     ScoreRecord prevBest_;  // 進入前的最佳成績（結算顯示用）
     PlaySession session_;
+    bool autoPlay_ = false;
+    float rate_ = 1.0f;
 
     int keyCount_ = 7;          // 音軌數（4 或 7）
     const int* laneKeys_ = nullptr;  // 對應鍵位集（指向 settings_.keys / keys4）

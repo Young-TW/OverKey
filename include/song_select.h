@@ -26,7 +26,8 @@ public:
 
     // 跑選單迴圈：Enter→Play、Tab→Settings、Esc/關窗→Quit。
     // musicVolume 用於 hover 副歌試聽；scores 用於詳情面板顯示最佳成績。
-    MenuResult run(Viewport& vp, float musicVolume, const ScoreBook& scores);
+    MenuResult run(Viewport& vp, float musicVolume, const ScoreBook& scores,
+                   bool& autoPlay, float& rate);
 
 private:
     struct Entry {
@@ -47,6 +48,8 @@ private:
     const ScoreBook* scores_ = nullptr;  // 詳情面板顯示最佳成績用（run 期間有效）
     int selected_ = 0;
     int scroll_ = 0;
+    bool autoPlay_ = false;  // 供 draw() 顯示指示器
+    float rate_ = 1.0f;
 };
 
 #endif

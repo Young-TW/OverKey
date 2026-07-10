@@ -340,7 +340,8 @@ struct CoverResult {
 
 // 回傳 kMenuQuit=離開、kMenuSettings=設定，否則為選擇的 index
 int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float musicVolume,
-            float rate, const ScoreBook& scores, MapImporter& importer, const fs::path& mapsDir) {
+            float rate, bool autoPlay, const ScoreBook& scores, MapImporter& importer,
+            const fs::path& mapsDir) {
     PixelCanvas canvas(term.cols(), term.rows());
     std::string out;
     Loader loader;  // 常駐背景載入執行緒
@@ -529,6 +530,7 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
             std::snprintf(rbuf, sizeof(rbuf), "RATE %.2fx", rate);
             canvas.putText(term.cols() / 2 - 2, 1, rbuf, kGold);
         }
+        if (autoPlay) canvas.putText(term.cols() / 2 - 2, 2, "AUTO", kGold);
 
         if (entries.empty()) {
             canvas.putText(2, 4, "no mania 4K/7K maps found", judgeRgb(Judgment::Miss));
@@ -589,7 +591,7 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
 
 // 遊玩 + 結算；ESC/q 中途回選單
 void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
-              ScoreBook& scores, float rate) {
+              ScoreBook& scores, float rate, bool autoPlay) {
     Beatmap map = loadBeatmap(entry.path);
     if (map.notes.empty()) return;
 
@@ -748,6 +750,7 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
                     songTimeMs = target + offset;
                     continue;
                 }
+                if (autoPlay) continue;  // auto-play：不讀軌道輸入
                 const int lane = laneOf(e.code, laneKeys, keyCount);
                 if (lane < 0) continue;
                 if (press) session.press(lane, songTimeMs);
@@ -769,7 +772,23 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
                 musicStarted = true;
             }
             songTimeMs = clock.timeMs() + offset;
+            if (autoPlay) {  // 自動按下到期音符
+                const auto& notes = session.notes();
+                for (std::size_t i = 0; i < notes.size(); ++i) {
+                    if (session.stateOf(i) != NoteState::Idle) continue;
+                    const ManiaNote& n = notes[i];
+                    if (songTimeMs >= n.startTime) session.press(n.column, n.startTime);
+                }
+            }
             session.advance(songTimeMs);
+            if (autoPlay) {  // 自動放開到期長押
+                const auto& notes = session.notes();
+                for (std::size_t i = 0; i < notes.size(); ++i) {
+                    if (session.stateOf(i) != NoteState::Holding) continue;
+                    const ManiaNote& n = notes[i];
+                    if (songTimeMs >= n.endTime) session.release(n.column, n.endTime);
+                }
+            }
             bool anyHit = false;
             for (const auto& ev : session.drainEvents()) {
                 flashAt[ev.lane] = frameStart;  // 命中閃光
@@ -779,7 +798,7 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
             if (anyHit) PlaySound(hitSound);
             if (session.finished(songTimeMs)) {
                 playing = false;
-                if (!recorded && !rateModded(rate)) {  // rate mod 局不計入 best
+                if (!recorded && !rateModded(rate) && !autoPlay) {  // auto/rate mod 局不計入 best
                     scores.submit(scoreKey, {session.score(), session.accuracy(),
                                              session.grade(), session.maxCombo(), true});
                     recorded = true;
@@ -900,6 +919,7 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
                 std::snprintf(buf, sizeof(buf), "RATE %.2fx", rate);
                 canvas.putText(1, 5, buf, kGold);
             }
+            if (autoPlay) canvas.putText(1, 6, "AUTO", kGold);
             std::snprintf(buf, sizeof(buf), "FPS %.0f  1%%%.0f  .1%%%.0f", fAvg, fLow1, fLow01);
             canvas.putText(1, 4, buf, kGray);
             if (session.lastJudgment() != Judgment::None) {
@@ -1101,8 +1121,8 @@ void runSettings(Terminal& term, Settings& settings) {
     }
 }
 
-// Mod 選單：目前只有 rate（0.5x~2.0x，0.05 一階）。rate 為暫時性（不存檔）。
-void runModMenu(Terminal& term, float& rate) {
+// Mod 選單：rate（0.5x~2.0x，0.05 一階）+ auto-play 切換。皆為暫時性（不存檔）。
+void runModMenu(Terminal& term, float& rate, bool& autoPlay) {
     PixelCanvas canvas(term.cols(), term.rows());
     std::string out;
     auto next = Clock::now();
@@ -1115,6 +1135,7 @@ void runModMenu(Terminal& term, float& rate) {
         for (const KeyEvent& e : term.poll()) {
             if (e.type != KeyEvent::Press) continue;
             if (e.code == 27 || e.code == 'q' || e.code == 9 || e.code == 'm') return;
+            if (e.code == 'a') autoPlay = !autoPlay;
             const int dir = (e.code == kKeyRight || e.code == 'l') ? 1
                             : (e.code == kKeyLeft || e.code == 'h') ? -1
                                                                     : 0;
@@ -1127,13 +1148,15 @@ void runModMenu(Terminal& term, float& rate) {
 
         canvas.clear();
         canvas.putText(2, 1, "MODS", kGold);
-        const bool on = rateModded(rate);
         char buf[32];
         std::snprintf(buf, sizeof(buf), "%.2fx", rate);
-        canvas.putText(4, 3, "> Rate", on ? kGold : kWhite);
-        canvas.putText(20, 3, buf, on ? kGold : kWhite);
-        canvas.putText(4, 5, "left/right adjust (0.05)    r reset    esc back", kGray);
-        canvas.putText(4, 6, "0.5x-2.0x: changes song speed & pitch (difficulty scales)", kGray);
+        const bool rateOn = rateModded(rate);
+        canvas.putText(4, 3, "> Rate", rateOn ? kGold : kWhite);
+        canvas.putText(20, 3, buf, rateOn ? kGold : kWhite);
+        canvas.putText(4, 5, "> Auto-play", autoPlay ? kGold : kWhite);
+        canvas.putText(20, 5, autoPlay ? "ON" : "OFF", autoPlay ? kGold : kWhite);
+        canvas.putText(4, 7, "left/right rate   a auto   r reset   esc back", kGray);
+        canvas.putText(4, 8, "0.5x-2.0x: changes song speed & pitch (difficulty scales)", kGray);
 
         canvas.flush(out);
         term.write(out);
@@ -1167,9 +1190,10 @@ int main(int argc, char* argv[]) {
         Terminal term;  // RAII：raw mode / alt screen / kitty
         int selected = 0;
         float rate = 1.0f;  // rate mod（暫時性，不存檔，每次啟動為 1.0x）
+        bool autoPlay = false;
         while (true) {
             const int choice = runMenu(term, entries, selected, settings.musicVolume, rate,
-                                       scores, importer, mapsDir);
+                                       autoPlay, scores, importer, mapsDir);
             if (choice == kMenuQuit) break;
             if (choice == kMenuSettings) {
                 runSettings(term, settings);
@@ -1178,11 +1202,11 @@ int main(int argc, char* argv[]) {
                 continue;
             }
             if (choice == kMenuMods) {
-                runModMenu(term, rate);
+                runModMenu(term, rate, autoPlay);
                 continue;
             }
             const float prevSpeed = settings.scrollSpeed;
-            playSong(term, entries[choice], settings, hit, scores, rate);
+            playSong(term, entries[choice], settings, hit, scores, rate, autoPlay);
             if (settings.scrollSpeed != prevSpeed)  // F3/F4 調過則存回
                 saveSettings(settings, kConfigFile);
         }

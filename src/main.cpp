@@ -29,8 +29,11 @@ int main(int argc, char* argv[]) {
     ScoreBook scores{kScoresFile};
     SongSelect menu{mapsDir};
 
+    bool autoPlay = false;
+    float rate = 1.0f;  // rate mod（暫時性，不存檔，每次啟動為 1.0x）
+
     while (!WindowShouldClose()) {
-        MenuResult choice = menu.run(viewport, settings.musicVolume, scores);
+        MenuResult choice = menu.run(viewport, settings.musicVolume, scores, autoPlay, rate);
         if (choice.action == MenuAction::Quit) break;
 
         if (choice.action == MenuAction::Settings) {
@@ -48,13 +51,13 @@ int main(int argc, char* argv[]) {
 
         const std::string key = choice.path.string();
         std::filesystem::path audioPath = choice.path.parent_path() / map.audioFilename;
-        Game game{std::move(map), std::move(audioPath), settings, scores.best(key)};
+        Game game{std::move(map), std::move(audioPath), settings, scores.best(key), autoPlay, rate};
         game.run(viewport);  // 結束或中途放棄後回到選單
         if (game.scrollSpeed() != settings.scrollSpeed) {  // F3/F4 調過則存回
             settings.scrollSpeed = game.scrollSpeed();
             saveSettings(settings, kConfigFile);
         }
-        if (game.completed()) {  // 打完才記錄成績
+        if (game.completed() && !autoPlay && rate == 1.0f) {  // auto/rate mod 局不計入 best
             scores.submit(key, {game.finalScore(), game.finalAccuracy(), game.finalGrade(),
                                 game.finalMaxCombo(), true});
         }

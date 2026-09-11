@@ -26,7 +26,9 @@ const USAGE = `Usage: node import.js [options]
 
 Sources (auto-detected when the flag is omitted):
   --lazer <dir>    osu!(lazer) data dir containing client.realm
-                   (default: ~/.local/share/osu, honoring storage.ini FullPath)
+                   (default: platform data dir — Linux: ~/.local/share/osu,
+                   macOS: ~/Library/Application Support/osu, Windows: %AppData%/osu —
+                   honoring storage.ini FullPath)
   --quaver <dir>   Quaver install dir (the one with Songs/ and quaver.cfg)
                    (default: auto-detect under all Steam libraries)
   --no-lazer       skip osu!(lazer)
@@ -141,14 +143,29 @@ function linkOrCopy(src, dst, forceCopy) {
 
 // ----------------------------------------------------------- osu!(lazer) part
 
+// osu!(lazer)'s default storage location per platform.
+function lazerDefaultDir() {
+  const home = os.homedir();
+  switch (process.platform) {
+    case "darwin":
+      return path.join(home, "Library", "Application Support", "osu");
+    case "win32":
+      return path.join(process.env.APPDATA || path.join(home, "AppData", "Roaming"), "osu");
+    default:
+      return path.join(
+        process.env.XDG_DATA_HOME || path.join(home, ".local", "share"),
+        "osu"
+      );
+  }
+}
+
 function findLazerDir(cliDir) {
   if (cliDir) {
     if (!fs.existsSync(path.join(cliDir, "client.realm")))
       throw new Error(`${cliDir}: no client.realm found — not a lazer data dir?`);
     return cliDir;
   }
-  const xdg = process.env.XDG_DATA_HOME || path.join(os.homedir(), ".local", "share");
-  const def = path.join(xdg, "osu");
+  const def = lazerDefaultDir();
   if (!isDir(def)) throw new Error(`lazer data dir not found at ${def} (use --lazer)`);
   // A custom storage location is recorded in storage.ini inside the default dir.
   const fullPath = readIniValue(path.join(def, "storage.ini"), "FullPath");
@@ -235,12 +252,25 @@ async function importLazer(opt, mapsDir, stats) {
 
 function steamLibraryRoots() {
   const home = os.homedir();
-  const roots = [
-    path.join(home, ".local", "share", "Steam"),
-    path.join(home, ".steam", "steam"),
-    path.join(home, ".var", "app", "com.valvesoftware.Steam", ".local", "share", "Steam"),
-    path.join(home, "snap", "steam", "common", ".local", "share", "Steam"),
-  ];
+  let roots;
+  switch (process.platform) {
+    case "darwin":
+      roots = [path.join(home, "Library", "Application Support", "Steam")];
+      break;
+    case "win32":
+      roots = [
+        path.join(process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)", "Steam"),
+        path.join(process.env.ProgramFiles || "C:\\Program Files", "Steam"),
+      ];
+      break;
+    default:
+      roots = [
+        path.join(home, ".local", "share", "Steam"),
+        path.join(home, ".steam", "steam"),
+        path.join(home, ".var", "app", "com.valvesoftware.Steam", ".local", "share", "Steam"),
+        path.join(home, "snap", "steam", "common", ".local", "share", "Steam"),
+      ];
+  }
   const libs = [...roots];
   for (const root of roots) {
     const vdf = path.join(root, "steamapps", "libraryfolders.vdf");

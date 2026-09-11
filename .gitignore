@@ -18,3 +18,5 @@
 /overkey.cfg
 /overkey-scores.txt
 /overkey-debug.log
+
+/tools/map-import/node_modules/

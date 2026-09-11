@@ -103,8 +103,34 @@ unzip "Some Song.osz" -d maps/SomeSong    # osu
 unzip "12345.qp"      -d maps/SomeQuaver  # quaver
 ```
 
-> osu! **lazer** stores beatmaps in a hashed content store (no `.osu` files), so it is
-> not directly readable — export an `.osz` from lazer and extract it.
+> osu! **lazer** stores beatmaps in a Realm database + hashed content store, so its
+> folder is not directly readable — use the bundled importer instead (see below).
+
+### Import from osu!(lazer) & Quaver — `tools/map-import/`
+
+A small Node.js tool that pulls your **existing local** libraries into `maps/` —
+no re-downloading, no manual exporting:
+
+```bash
+cd tools/map-import
+npm install        # one-time (fetches the realm package for reading lazer's DB)
+node import.js
+```
+
+- **osu!(lazer)**: reads `client.realm` read-only (dynamic schema, never touches
+  the DB) and materialises each mania beatmap set as `maps/Lazer/<OnlineID> <Artist> - <Title>/`.
+  Use `--all` to import every ruleset, not just mania.
+- **Quaver**: finds your Steam install (all libraries, incl. Flatpak; honors a
+  custom `SongDirectory` in `quaver.cfg`) and mirrors every song folder into
+  `maps/Quaver/`.
+- Files are **hard-linked** (zero extra disk; `--copy` to force copying), existing
+  folders are skipped, and lazer-side deletions are respected — so re-running it
+  after downloading new maps is instant and safe. `--dry-run` previews, `--maps`
+  changes the target, `--no-lazer` / `--no-quaver` skip a source.
+
+If your npm blocks install scripts and `require("realm")` fails afterwards, run
+`npm install-scripts approve realm && npm rebuild realm` once inside
+`tools/map-import/`.
 
 ### Controls
 
@@ -142,6 +168,7 @@ src/tui_main.cpp                  TUI frontend (menu, gameplay, settings, result
 include/render.h                  GUI virtual-resolution viewport
 include/raii.h                    RAII wrappers for raylib window/audio/textures
 tests/test_core.cpp               unit tests for the raylib-free core
+tools/map-import/                 Node tool: import osu!(lazer) + Quaver libraries into maps/
 ```
 
 CMake builds an `overkey_core` static library shared by both executables.

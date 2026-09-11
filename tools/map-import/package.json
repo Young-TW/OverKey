@@ -1,0 +1,19 @@
+{
+  "name": "overkey-map-import",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Import local osu!(lazer) and Quaver beatmaps into OverKey's maps folder",
+  "main": "import.js",
+  "bin": {
+    "overkey-map-import": "import.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "realm": "^20.2.0"
+  },
+  "allowScripts": {
+    "realm@20.2.0": true
+  }
+}

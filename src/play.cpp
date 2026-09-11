@@ -13,6 +13,7 @@ constexpr Judgment kTiers[] = {Judgment::Perfect, Judgment::Great, Judgment::Goo
 constexpr double kHitWindowMs = 125.0;                       // 最大判定視窗
 constexpr int kPoints[] = {0, 300, 200, 100, 50, 0};        // 對應 Judgment 列舉
 constexpr double kEndPadMs = 1500.0;                        // 最後音符後到結算的餘量
+constexpr double kMaxBackwardAlignMs = 500.0;               // 音訊錨點允許的回拉上限
 
 }  // namespace
 
@@ -42,9 +43,18 @@ void SongClock::tick(double frameDeltaMs, double audioPosMs) {
     timeMs_ += frameDeltaMs * rate_;  // 等速前進（恆定速度，避免速度脈動；rate mod 縮放）
     // 僅在大幅失準（卡頓 / seek / 音訊量化以外的真正漂移）才硬對齊；
     // 平時不做連續微調，否則音訊位置每 ~75ms 跳動會造成 ~13Hz 速度抖動。
-    if (audioPosMs >= 0.0 && std::abs(audioPosMs - timeMs_) > 100.0) {
+    //
+    // 但音訊播完後回報的位置不可信，硬對齊會把時鐘釘住而進不了結算：
+    //  - raylib 音樂預設循環播放，位置過檔尾會繞回 ~0 再重新爬升（大幅回跳）；
+    //  - miniaudio 播完即停，游標凍結在檔尾（完全不再前進）。
+    // 因此只接受「位置仍在推進」且「回拉幅度小」的校正；往前的大跳（lag 恢復）保留。
+    // 音訊耗盡後時鐘改靠 frame delta 自由前進，保證抵達 songEnd。
+    if (audioPosMs >= 0.0 && audioPosMs > lastAudioPosMs_ &&
+        std::abs(audioPosMs - timeMs_) > 100.0 &&
+        timeMs_ - audioPosMs <= kMaxBackwardAlignMs) {
         timeMs_ = audioPosMs;
     }
+    if (audioPosMs >= 0.0) lastAudioPosMs_ = audioPosMs;
 }
 
 PlaySession::PlaySession(std::vector<ManiaNote> notes)

@@ -39,6 +39,7 @@ public:
 private:
     double timeMs_;
     double rate_ = 1.0;
+    double lastAudioPosMs_ = -1.0;  // 上一幀的音訊位置（偵測凍結 / 繞回用），<0 = 尚未見過音訊
     bool started_ = false;
     bool startedThisTick_ = false;
 };

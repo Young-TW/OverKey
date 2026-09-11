@@ -224,6 +224,45 @@ void testSongClock() {
     CHECK(c.timeMs() < t1 + 20.0);          // 仍約 +16ms，沒跳到 +50
 }
 
+// 播完音樂後音訊位置不可信（繞回 0 / 凍結檔尾），時鐘不能被釘住——
+// 這是「譜面播完卡在遊戲畫面進不了結算」的回歸測試。
+void testSongClockPastAudioEnd() {
+    std::printf("song clock past audio end\n");
+
+    // (a) 游標凍結在檔尾（TUI/miniaudio）：時鐘必須繼續前進越過結尾
+    {
+        SongClock c(0.0);
+        c.seek(9800.0);
+        double audio = 9800.0;
+        for (int i = 0; i < 20; ++i) { audio += 10.0; c.tick(10.0, audio); }  // 音訊正常推進
+        for (int i = 0; i < 50; ++i) c.tick(20.0, audio);                     // 之後凍結不動
+        CHECK(c.timeMs() > audio + 500.0);  // 舊實作會被釘在 audio+~100ms
+    }
+
+    // (b) 音樂繞回開頭（GUI/raylib 預設循環播放）：大幅回跳必須忽略
+    {
+        SongClock c(0.0);
+        c.seek(50000.0);
+        double audio = 50000.0;
+        for (int i = 0; i < 10; ++i) { audio += 10.0; c.tick(10.0, audio); }
+        c.tick(10.0, 50.0);                       // 過檔尾 → 位置繞回 ~0
+        CHECK(c.timeMs() > 50000.0);              // 不能被拉回開頭
+        for (int i = 0; i < 100; ++i) { audio = 100.0 + i * 10.0; c.tick(10.0, audio); }
+        CHECK(c.timeMs() > 50000.0 + 900.0);      // 音訊從 0 爬升也不得回拉
+    }
+
+    // (c) 播放中的小幅回拉仍然生效（防矯枉過正）
+    {
+        SongClock c(0.0);
+        c.seek(20000.0);
+        double audio = 20010.0;
+        c.tick(10.0, audio);                      // 對齊 time≈audio
+        for (int i = 0; i < 30; ++i) { audio += 1.0; c.tick(10.0, audio); }  // 時鐘快 9ms/tick
+        CHECK(c.timeMs() < 20100.0);              // 漂移 >100ms 時被小幅拉回
+        CHECK(c.timeMs() > 20010.0);              // 整體仍持續前進
+    }
+}
+
 void testScores() {
     std::printf("scores\n");
     const fs::path f = fs::temp_directory_path() / "overkey_test" / "scores.txt";
@@ -256,6 +295,7 @@ int main() {
     testScoringAndMiss();
     testLongNote();
     testSongClock();
+    testSongClockPastAudioEnd();
     testScores();
 
     std::error_code ec;

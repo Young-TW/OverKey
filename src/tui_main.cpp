@@ -49,6 +49,7 @@ const Rgb kWhite{235, 235, 235};
 const Rgb kGray{130, 130, 130};
 const Rgb kGold{255, 203, 0};
 const Rgb kSky{102, 191, 255};
+const Rgb kComboDim{70, 70, 80};  // 軌道中央大字 combo 的暗灰藍
 
 // 依鍵數產生音軌配色：奇數鍵正中央為金色，其餘藍/白交替
 Rgb laneColor(int col, int keyCount) {
@@ -64,6 +65,43 @@ Rgb judgeRgb(Judgment j) {
         case Judgment::Bad:     return {255, 161, 0};
         case Judgment::Miss:    return {230, 41, 55};
         default:                return kGray;
+    }
+}
+
+// 大數字點陣字型（3x5）：經 pixel layer 放大輸出即呈現色塊字元效果
+constexpr uint8_t kDigitFont[10][5] = {
+    {0b111, 0b101, 0b101, 0b101, 0b111},  // 0
+    {0b010, 0b110, 0b010, 0b010, 0b111},  // 1
+    {0b111, 0b001, 0b111, 0b100, 0b111},  // 2
+    {0b111, 0b001, 0b111, 0b001, 0b111},  // 3
+    {0b101, 0b101, 0b111, 0b001, 0b001},  // 4
+    {0b111, 0b100, 0b111, 0b001, 0b111},  // 5
+    {0b111, 0b100, 0b111, 0b101, 0b111},  // 6
+    {0b111, 0b001, 0b010, 0b010, 0b010},  // 7
+    {0b111, 0b101, 0b111, 0b101, 0b111},  // 8
+    {0b111, 0b101, 0b111, 0b001, 0b111},  // 9
+};
+
+// 以色塊字元畫出放大數字：cx 為水平中心（格），cyPx 為垂直中心（像素）。
+// 每個字形點放大為 nx 格寬 × ny 像素高（ny=8＝一格高）。
+void drawBigDigits(PixelCanvas& canvas, int value, int cx, int cyPx, Rgb color,
+                   int nx = 2, int ny = 8) {
+    std::string s = std::to_string(value);
+    if (s.size() > 6) s.resize(6);  // 避免超出版面
+    const int glyphW = 3 * nx;
+    const int gap = nx;
+    const int totalW = (int)s.size() * (glyphW + gap) - gap;
+    const int x0 = cx - totalW / 2;
+    const int y0 = cyPx - (5 * ny) / 2;
+    for (std::size_t d = 0; d < s.size(); ++d) {
+        const uint8_t* glyph = kDigitFont[s[d] - '0'];
+        const int dx = x0 + (int)d * (glyphW + gap);
+        for (int row = 0; row < 5; ++row)
+            for (int col = 0; col < 3; ++col)
+                if (glyph[row] & (1 << (2 - col)))
+                    canvas.fillRect(dx + col * nx, y0 + row * ny,
+                                    dx + col * nx + nx - 1, y0 + row * ny + ny - 1,
+                                    color);
     }
 }
 
@@ -826,6 +864,10 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
             // 判定線（3 像素粗）
             canvas.fillRect(originCol, judgePxY - 1, originCol + playCells - 1, judgePxY + 1,
                             kWhite);
+            // Combo 大字：軌道中央、音符下層（暗灰避免干擾讀譜）
+            if (session.combo() > 0)
+                drawBigDigits(canvas, session.combo(), originCol + playCells / 2,
+                              judgePxY / 2, kComboDim);
             // 音符
             const auto& notes = session.notes();
             for (std::size_t i = 0; i < notes.size(); ++i) {

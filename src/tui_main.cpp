@@ -362,6 +362,51 @@ std::string buildKittyCover(const fs::path& path, int col, int row, int boxCols,
     return s;
 }
 
+// 譜面背景圖的 kitty image id（避開軌道圓形佔用的 1-7）
+constexpr int kBgImageId = 200;
+constexpr double kBgDim = 0.45;  // 背景調暗比例，避免干擾 HUD 與讀譜
+
+// 傳輸譜面背景圖：解碼 → 縮小 → 調暗 → PNG → base64 → 只傳輸不顯示（a=t），
+// image id = 200，供遊玩中每幀放置到軌道兩側空白。outW/outH 回傳縮放後像素尺寸。
+// 失敗回傳空字串。
+std::string transmitBackground(const fs::path& path, int& outW, int& outH) {
+    Image img = LoadImage(path.string().c_str());
+    if (img.data == nullptr) return "";
+    if (img.width > 800) ImageResize(&img, 800, img.height * 800 / img.width);
+    outW = img.width;
+    outH = img.height;
+    unsigned char* px = static_cast<unsigned char*>(img.data);
+    const size_t n = static_cast<size_t>(img.width) * img.height * 4;
+    for (size_t i = 0; i < n; i += 4) {  // RGBA：只調暗 RGB
+        px[i] = static_cast<unsigned char>(px[i] * kBgDim);
+        px[i + 1] = static_cast<unsigned char>(px[i + 1] * kBgDim);
+        px[i + 2] = static_cast<unsigned char>(px[i + 2] * kBgDim);
+    }
+    int sz = 0;
+    unsigned char* png = ExportImageToMemory(img, ".png", &sz);
+    std::string b64 = (png && sz > 0) ? tui::base64Encode(png, static_cast<size_t>(sz)) : "";
+    if (png) MemFree(png);
+    UnloadImage(img);
+    if (b64.empty()) return "";
+
+    std::string s;
+    constexpr size_t CH = 4000;
+    for (size_t i = 0; i < b64.size(); i += CH) {
+        const bool first = (i == 0), last = (i + CH >= b64.size());
+        s += "\x1b_G";
+        if (first) {
+            char h[48];
+            std::snprintf(h, sizeof(h), "a=t,f=100,t=d,i=%d,q=2,", kBgImageId);
+            s += h;
+        }
+        s += last ? "m=0" : "m=1";
+        s += ";";
+        s += b64.substr(i, CH);
+        s += "\x1b\\";
+    }
+    return s;
+}
+
 // 背景載入的試聽（已在背景 Play+Seek 到副歌點，避免主執行緒 MP3 seek 卡頓）
 struct PreviewLoad {
     Music music{};
@@ -684,8 +729,20 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
 
     // 圓形音符 kitty 版（shape==2）：每軌一張圓，開場先傳輸；離開時清除
     if (settings.noteShape == 2) term.write(transmitLaneCircles(keyCount));
+    // 譜面背景圖（kitty graphics）：開場傳輸一次，每幀放置到軌道兩側
+    std::string bgXmit;
+    int bgImgW = 0, bgImgH = 0;
+    {
+        const BeatmapInfo info = loadBeatmapInfo(entry.path);
+        if (!info.backgroundFilename.empty())
+            bgXmit = transmitBackground(entry.path.parent_path() / info.backgroundFilename,
+                                        bgImgW, bgImgH);
+    }
+    const bool haveBgImg = !bgXmit.empty();
+    if (haveBgImg) term.write(bgXmit);
+    const bool kittyGfx = (settings.noteShape == 2) || haveBgImg;
     auto cleanupImgs = [&] {
-        if (settings.noteShape == 2) term.write(kKittyDeleteAll);
+        if (kittyGfx) term.write(kKittyDeleteAll);
     };
 
     auto restartAttempt = [&] {
@@ -724,6 +781,38 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
         const int judgeRow = term.rows() - 3;
         const int judgePxY = judgeRow * 8;
         const double pxPerMs = judgePxY / approach;
+
+        // 背景圖放置：單張圖等比鋪滿全螢幕，再用 source crop 只顯示軌道左右兩側，
+        // 視覺上是一張被軌道遮住的連續圖片（z<0 壓在文字之下；每幀重建以跟隨縮放）
+        std::string bgPlace;
+        if (haveBgImg && bgImgW > 0 && bgImgH > 0) {
+            // 格寬:高約 1:2 → 等比 fit 出全螢幕顯示框（同 buildKittyCover 的估算）
+            const double aspect = static_cast<double>(bgImgW) / bgImgH;
+            int boxW = term.cols(), boxH = (int)std::lround(boxW * 0.5 / aspect);
+            if (boxH > term.rows()) {
+                boxH = term.rows();
+                boxW = (int)std::lround(boxH * 2.0 * aspect);
+            }
+            boxW = std::max(1, boxW);
+            boxH = std::max(1, boxH);
+            const int boxCol = (term.cols() - boxW) / 2;
+            const int boxRow = (term.rows() - boxH) / 2;
+            auto placeCrop = [&](int cBegin, int cEnd, int pid) {
+                const int b = std::max(cBegin, boxCol);
+                const int e = std::min(cEnd, boxCol + boxW);
+                if (e - b <= 0) return;
+                const int x = (int)std::lround((double)(b - boxCol) / boxW * bgImgW);
+                const int w = std::max(1, (int)std::lround((double)(e - b) / boxW * bgImgW));
+                char buf[128];
+                std::snprintf(buf, sizeof(buf),
+                              "\x1b[%d;%dH\x1b_Ga=p,i=%d,p=%d,x=%d,w=%d,c=%d,r=%d,z=-2,C=1,q=2"
+                              "\x1b\\",
+                              boxRow + 1, b + 1, kBgImageId, pid, x, w, e - b, boxH);
+                bgPlace += buf;
+            };
+            placeCrop(0, originCol, 1);
+            placeCrop(originCol + playCells, term.cols(), 2);
+        }
 
         // ---- 輸入 ----
         for (const KeyEvent& e : term.poll()) {
@@ -1032,11 +1121,13 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
         }
 
         canvas.flush(out);
+        if (settings.noteShape != 2) out += bgPlace;  // shape 2 統一在下方處理放置
         term.write(out);
 
-        // 圓形音符 kitty 版：先清掉上一幀的放置，再放本幀（結算畫面則清空不放）
+        // 圓形音符 kitty 版：先清掉上一幀的放置，再放本幀（背景保留，音符結算後不放）
         if (settings.noteShape == 2) {
             term.write(kKittyClearPlacements);
+            term.write(bgPlace);
             if (playing) term.write(imgOut);
         }
 

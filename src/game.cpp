@@ -11,6 +11,7 @@
 #include "play.h"
 #include "raii.h"
 #include "render.h"
+#include "pp.h"
 
 namespace {
 
@@ -406,6 +407,10 @@ void Game::drawResult() const {
     const int gfs = 160;
     DrawText(g, cx - MeasureText(g, gfs) / 2, 220, gfs, gcol);
 
+    // 計算 Quaver 難度、Rating 以及 osu!mania 星級與 PP
+    const double quaverDiff = quaverDifficulty(map_.notes, map_.keyCount, 1.0f);
+    const RatingEstimate ratingEst = estimateRatings(quaverDiff, session_);
+
     // 左欄：總體數據
     int ly = 430;
     const int fs = 28;
@@ -417,6 +422,11 @@ void Game::drawResult() const {
     stat("ACCURACY", TextFormat("%.2f%%", session_.accuracy()), RAYWHITE);
     stat("SCORE", TextFormat("%d", session_.score()), RAYWHITE);
     stat("MAX COMBO", TextFormat("%d", session_.maxCombo()), GOLD);
+    // Quaver & osu!mania 相關指標
+    stat("QUAVER DIFF", TextFormat("%.2f", ratingEst.quaverDiff), RAYWHITE);
+    stat("QUAVER RATING", TextFormat("%.2f", ratingEst.quaverRating), RAYWHITE);
+    stat("OSU STAR", TextFormat("%.2f★", ratingEst.osuStar), RAYWHITE);
+    stat("OSU PP", TextFormat("%.2f", ratingEst.osuPP), RAYWHITE);
 
     // 右欄：各判定等級次數
     const Judgment tiers[] = {Judgment::Perfect, Judgment::Great, Judgment::Good,

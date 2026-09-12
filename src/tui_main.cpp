@@ -22,6 +22,7 @@
 #include "scores.h"
 #include "settings.h"
 #include "tui.h"
+#include "pp.h"
 
 namespace fs = std::filesystem;
 using tui::KeyEvent;
@@ -1102,6 +1103,17 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
             canvas.putText(cx - 12, y++, buf, kWhite);
             std::snprintf(buf, sizeof(buf), "MAX COMBO %d", session.maxCombo());
             canvas.putText(cx - 12, y++, buf, kGold);
+            // 計算 Quaver 難度、Rating、osu!mania 星級與 PP
+            const double quaverDiff = quaverDifficulty(map.notes, map.keyCount, 1.0f);
+            const RatingEstimate ratingEst = estimateRatings(quaverDiff, session);
+            std::snprintf(buf, sizeof(buf), "QUAVER DIFF %.2f", ratingEst.quaverDiff);
+            canvas.putText(cx - 12, y++, buf, kWhite);
+            std::snprintf(buf, sizeof(buf), "QUAVER RATING %.2f", ratingEst.quaverRating);
+            canvas.putText(cx - 12, y++, buf, kWhite);
+            std::snprintf(buf, sizeof(buf), "OSU STAR %.2f★", ratingEst.osuStar);
+            canvas.putText(cx - 12, y++, buf, kWhite);
+            std::snprintf(buf, sizeof(buf), "OSU PP %.2f", ratingEst.osuPP);
+            canvas.putText(cx - 12, y++, buf, kWhite);
             ++y;
             const Judgment tiers[] = {Judgment::Perfect, Judgment::Great, Judgment::Good,
                                       Judgment::Bad, Judgment::Miss};

@@ -320,16 +320,26 @@ std::string transmitLaneCircles(int keyCount) {
 }
 
 // 用 kitty graphics protocol 顯示封面：解碼 → PNG → base64 → APC 分塊傳輸並顯示。
-// col/row 為 1-based 游標位置；boxCols 為顯示寬（格），outRows 回傳實際高（格，保比例）。
+// col/row 為 1-based 游標位置，boxCols/boxRowsMax 為可用面板（格）；圖只允許等比縮放，
+// 在面板內等比 fit 並水平置中，回傳實際放置寬高 outCols/outRows 與左緣 outLeft（0-based）。
 // 回傳要寫入終端機的跳脫序列；失敗回空字串。
 std::string buildKittyCover(const fs::path& path, int col, int row, int boxCols, int boxRowsMax,
-                            int& outRows) {
+                            int& outCols, int& outRows, int& outLeft) {
     Image img = LoadImage(path.string().c_str());
     if (img.data == nullptr) return "";
     if (img.width > 480) ImageResize(&img, 480, img.height * 480 / img.width);
     const double aspect = static_cast<double>(img.width) / std::max(1, img.height);
-    // 格約 1:2（寬:高）→ 保比例的列數
-    outRows = std::clamp((int)std::lround(boxCols * 0.5 / aspect), 1, boxRowsMax);
+    // 格約 1:2（寬:高）→ 等比 fit：高超過就以高反推寬，再於面板內水平置中
+    outCols = boxCols;
+    outRows = (int)std::lround(outCols * 0.5 / aspect);
+    if (outRows > boxRowsMax) {
+        outRows = boxRowsMax;
+        outCols = (int)std::lround(outRows * 2.0 * aspect);
+    }
+    outCols = std::clamp(outCols, 1, boxCols);
+    outRows = std::clamp(outRows, 1, boxRowsMax);
+    const int left = (boxCols - outCols) / 2;
+    outLeft = col - 1 + left;
 
     int sz = 0;
     unsigned char* png = ExportImageToMemory(img, ".png", &sz);
@@ -340,7 +350,7 @@ std::string buildKittyCover(const fs::path& path, int col, int row, int boxCols,
 
     std::string s = kKittyDeleteAll;
     char cur[32];
-    std::snprintf(cur, sizeof(cur), "\x1b[%d;%dH", row, col);
+    std::snprintf(cur, sizeof(cur), "\x1b[%d;%dH", row, col + left);
     s += cur;
 
     constexpr size_t CH = 4000;
@@ -350,7 +360,7 @@ std::string buildKittyCover(const fs::path& path, int col, int row, int boxCols,
         s += "\x1b_G";
         if (firstChunk) {
             char hdr[64];
-            std::snprintf(hdr, sizeof(hdr), "a=T,f=100,t=d,C=1,q=2,c=%d,r=%d,", boxCols,
+            std::snprintf(hdr, sizeof(hdr), "a=T,f=100,t=d,C=1,q=2,c=%d,r=%d,", outCols,
                           outRows);
             s += hdr;
         }
@@ -417,7 +427,8 @@ struct PreviewLoad {
 struct CoverResult {
     std::string seq;
     int rows = 0;
-    int boxCols = 0;
+    int cols = 0;     // 實際放置寬（格，等比 fit 後）
+    int leftCol = 0;  // 置中後的左緣（0-based）
     fs::path path;
 };
 
@@ -581,9 +592,8 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
                 coverLoad = loader.submit([=] {
                     CoverResult r;
                     r.path = desired;
-                    r.boxCols = boxCols;
                     r.seq = buildKittyCover(desired, coverCol, coverRow, boxCols, boxRowsMax,
-                                            r.rows);
+                                            r.cols, r.rows, r.leftCol);
                     return r;
                 });
             }
@@ -597,7 +607,7 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
                 term.write(r.seq);
                 coverPath = r.path;
                 coverRows = r.rows;
-                canvas.setReserved(coverCol - 1, coverRow - 1, coverCol - 1 + r.boxCols - 1,
+                canvas.setReserved(r.leftCol, coverRow - 1, r.leftCol + r.cols - 1,
                                    coverRow - 1 + coverRows - 1);
             } else {  // 解碼失敗：記住此路徑避免重試
                 coverPath = r.path;

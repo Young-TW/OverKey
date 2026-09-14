@@ -7,6 +7,7 @@
 
 #include "map.h"
 #include "play.h"
+#include "pp.h"
 #include "scores.h"
 
 namespace fs = std::filesystem;
@@ -286,6 +287,42 @@ void testScores() {
     }
 }
 
+// 即時 pp / Quaver rating 計數器語意：從 0 開始、隨判定進度成長，
+// 全部判定完成時與整場估計（estimateRatings，結算畫面用）一致。
+void testLiveRatings() {
+    std::printf("live ratings\n");
+    constexpr double kDiff = 10.0;  // 任意難度值；本測試不驗證 QSS 本身
+    const std::vector<ManiaNote> notes = {{0, 1000, -1}, {1, 2000, -1}, {2, 3000, -1},
+                                          {3, 4000, 4500}};  // 3 tap + 1 LN = 5 units
+    PlaySession s(notes);
+    CHECK(s.totalUnits() == 5);
+
+    // 0 判定：兩個計數器都是 0（回歸：第一個判定前不得顯示滿額估計）
+    RatingEstimate live = estimateLiveRatings(kDiff, s);
+    CHECK(live.quaverRating == 0.0 && live.osuPP == 0.0);
+
+    // 打完第一個 note：非零、但遠小於整場（進度 1/5）
+    s.press(0, 1000);
+    live = estimateLiveRatings(kDiff, s);
+    CHECK(live.quaverRating > 0.0 && live.osuPP > 0.0);
+    const RatingEstimate partial = live;
+
+    // 全數打完（LN 按住到尾 → 尾 Perfect）
+    s.press(1, 2000);
+    s.press(2, 3000);
+    s.press(3, 4000);
+    s.advance(4500);
+    live = estimateLiveRatings(kDiff, s);
+    const RatingEstimate full = estimateRatings(kDiff, s);
+
+    // 進度=1 → 即時計數器 = 結算數字（進度縮放為恰 ×1.0）
+    CHECK(live.quaverRating == full.quaverRating);
+    CHECK(live.osuPP == full.osuPP);
+    // 且整場 > 中途
+    CHECK(full.quaverRating > partial.quaverRating);
+    CHECK(full.osuPP > partial.osuPP);
+}
+
 }  // namespace
 
 int main() {
@@ -296,6 +333,7 @@ int main() {
     testLongNote();
     testSongClock();
     testSongClockPastAudioEnd();
+    testLiveRatings();
     testScores();
 
     std::error_code ec;

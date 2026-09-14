@@ -50,7 +50,8 @@ const Rgb kWhite{235, 235, 235};
 const Rgb kGray{130, 130, 130};
 const Rgb kGold{255, 203, 0};
 const Rgb kSky{102, 191, 255};
-const Rgb kComboDim{70, 70, 80};  // 軌道中央大字 combo 的暗灰藍
+const Rgb kPurple{200, 122, 255};  // 同 raylib PURPLE，HUD Quaver rating 用
+const Rgb kComboDim{70, 70, 80};   // 軌道中央大字 combo 的暗灰藍
 
 // 依鍵數產生音軌配色：奇數鍵正中央為金色，其餘藍/白交替
 Rgb laneColor(int col, int keyCount) {
@@ -713,6 +714,9 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
     bool recorded = false;  // 是否已提交本局成績
 
     PlaySession session(map.notes);
+    // HUD 即時 pp / Quaver rating 計數器與結算共用的難度（rate 恆 1.0，與結算一致）；
+    // QSS 較重，每局只算一次
+    const double quaverDiff = quaverDifficulty(map.notes, map.keyCount, 1.0f);
     const int keyCount = (map.keyCount == 4) ? 4 : 7;
     const int* laneKeys = (keyCount == 4) ? settings.keys4.data() : settings.keys.data();
     const double offset = settings.audioOffsetMs;
@@ -1073,16 +1077,22 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
             canvas.putText(1, 1, buf, session.combo() > 0 ? kGold : kGray);
             std::snprintf(buf, sizeof(buf), "ACC %.2f%%", session.accuracy());
             canvas.putText(1, 2, buf, kWhite);
+            // 即時 Quaver rating / pp（依判定品質與進度累積；打完 = 結算畫面數字）
+            const RatingEstimate liveEst = estimateLiveRatings(quaverDiff, session);
+            std::snprintf(buf, sizeof(buf), "QR %.2f", liveEst.quaverRating);
+            canvas.putText(1, 3, buf, kPurple);
+            std::snprintf(buf, sizeof(buf), "PP %.2f", liveEst.osuPP);
+            canvas.putText(1, 4, buf, kGold);
             std::snprintf(buf, sizeof(buf), "SPEED %.1fx %.0fms", settings.scrollSpeed,
                           (term.rows() * 8) / pxPerMs);
-            canvas.putText(1, 3, buf, kGray);
+            canvas.putText(1, 5, buf, kGray);
             if (rateModded(rate)) {
                 std::snprintf(buf, sizeof(buf), "RATE %.2fx", rate);
-                canvas.putText(1, 5, buf, kGold);
+                canvas.putText(1, 7, buf, kGold);
             }
-            if (autoPlay) canvas.putText(1, 6, "AUTO", kGold);
+            if (autoPlay) canvas.putText(1, 8, "AUTO", kGold);
             std::snprintf(buf, sizeof(buf), "FPS %.0f  1%%%.0f  .1%%%.0f", fAvg, fLow1, fLow01);
-            canvas.putText(1, 4, buf, kGray);
+            canvas.putText(1, 6, buf, kGray);
             if (session.lastJudgment() != Judgment::None) {
                 const char* jt = judgeName(session.lastJudgment());
                 canvas.putText(originCol + playCells / 2 - (int)std::string(jt).size() / 2,
@@ -1122,8 +1132,7 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
             canvas.putText(cx - 12, y++, buf, kWhite);
             std::snprintf(buf, sizeof(buf), "MAX COMBO %d", session.maxCombo());
             canvas.putText(cx - 12, y++, buf, kGold);
-            // 計算 Quaver 難度、Rating、osu!mania 星級與 PP
-            const double quaverDiff = quaverDifficulty(map.notes, map.keyCount, 1.0f);
+            // Quaver 難度在開局時已算好（與 HUD 即時計數器同源）；此處只重估最終成績
             const RatingEstimate ratingEst = estimateRatings(quaverDiff, session);
             std::snprintf(buf, sizeof(buf), "QUAVER DIFF %.2f", ratingEst.quaverDiff);
             canvas.putText(cx - 12, y++, buf, kWhite);

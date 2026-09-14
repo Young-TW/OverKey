@@ -6,6 +6,7 @@
 
 #include "map.h"
 #include "play.h"
+#include "pp.h"
 #include "scores.h"
 #include "settings.h"
 
@@ -55,6 +56,12 @@ private:
 
     Phase phase_ = Phase::Playing;
     int pauseSel_ = 0;  // 暫停選單選項：0 Resume / 1 Retry / 2 Quit
+
+    // 遊戲中即時 pp / Quaver rating 計數器：難度每局只算一次，推估值每幀更新。
+    // 語意＝目前判定品質推估整場，再依判定進度縮放（見 pp.h estimateLiveRatings）；
+    // 打完時（進度=1）即結算畫面顯示的數字。
+    double quaverDiff_ = 0.0;
+    RatingEstimate liveRating_{};
 
     // 命中回饋（用牆鐘計時，與遊戲邏輯時鐘分開）；上限 7 軌
     std::array<double, 7> laneFlash_{};

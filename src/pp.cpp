@@ -502,3 +502,19 @@ RatingEstimate estimateRatings(double quaverDiff, const PlaySession& session) {
     r.osuPP = osuManiaPP(r.osuStar, 0, nPerfect, nGreat, nGood, nBad, nMiss);
     return r;
 }
+
+// 即時計數器：pp/rating 公式只認「acc 品質」，本身沒有完成度概念——若直接拿
+// 前幾個判定的 acc 代入，第一個 PERFECT 就會得到整張圖的滿額估值。故乘上
+// 判定進度讓數字隨遊玩累積（品質由 acc 反映、量由進度反映）。
+RatingEstimate estimateLiveRatings(double quaverDiff, const PlaySession& session) {
+    RatingEstimate r = estimateRatings(quaverDiff, session);
+    const int judged = session.count(Judgment::Perfect) + session.count(Judgment::Great) +
+                       session.count(Judgment::Good) + session.count(Judgment::Bad) +
+                       session.count(Judgment::Miss);
+    const int total = session.totalUnits();
+    const double progress =
+        (total > 0) ? std::min(1.0, static_cast<double>(judged) / total) : 0.0;
+    r.quaverRating *= progress;
+    r.osuPP *= progress;
+    return r;
+}

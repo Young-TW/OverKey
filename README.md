@@ -17,6 +17,10 @@ logic core**: a graphical version (raylib) and a terminal version (TUI). Support
   (`PlaySession` + `SongClock`); the GUI and TUI are thin shells over it.
 - **4K & 7K** mania support (column mapping driven by the beatmap's key count).
 - **5-tier judgment**: Perfect / Great / Good / Bad / Miss, with combo and accuracy.
+- **Live QR / pp counter** in the gameplay HUD: Quaver rating and osu!mania pp
+  estimated from your judgment quality so far, scaled by play progress — starts at
+  0, drops on misses, and the value at the last note equals the result screen
+  (the Quaver QSS difficulty of the map is computed once per play).
 - **Long notes** with press/hold/release judging.
 - **Smooth, constant-velocity scroll clock** (frame-delta driven, audio used only as a
   drift anchor — no judder from the quantized audio position).

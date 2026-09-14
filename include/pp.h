@@ -56,4 +56,10 @@ struct RatingEstimate {
 };
 RatingEstimate estimateRatings(double quaverDiff, const PlaySession& session);
 
+// 遊戲中即時計數器用：與 estimateRatings 相同方法推估整場成績，再依遊玩進度
+// （已判定單位 / 全部單位）線性縮放 quaverRating / osuPP。
+// 語意：開局為 0、大致隨進度成長、失誤即時反映；打完時（進度=1）與
+// estimateRatings 完全一致，即結算畫面顯示的數字。
+RatingEstimate estimateLiveRatings(double quaverDiff, const PlaySession& session);
+
 #endif

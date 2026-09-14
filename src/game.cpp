@@ -93,6 +93,9 @@ Game::Game(Beatmap map, std::filesystem::path audioPath, Settings settings,
       approachMs_(kBaseApproachMs / settings.scrollSpeed),
       pxPerMs_(kJudgeY / approachMs_) {
     laneFlash_.fill(-10.0);
+    // HUD 即時計數器用的難度（rate 恆 1.0，與結算畫面一致）；QSS 較重，每局只算一次
+    quaverDiff_ = quaverDifficulty(map_.notes, map_.keyCount, 1.0f);
+    liveRating_ = estimateRatings(quaverDiff_, session_);
 }
 
 void Game::run(Viewport& vp) {
@@ -222,6 +225,9 @@ void Game::run(Viewport& vp) {
                 anyHit = true;
             }
             if (anyHit) PlaySound(hitSound->get());
+
+            // HUD 即時 pp / Quaver rating（很輕：幾個計數 + pow，每幀可負擔）
+            liveRating_ = estimateLiveRatings(quaverDiff_, session_);
 
             if (session_.finished(songTimeMs)) {
                 phase_ = Phase::Result;
@@ -353,14 +359,17 @@ void Game::drawPlayfield(double songTimeMs) const {
              session_.combo() > 0 ? GOLD : GRAY);
     DrawText(TextFormat("MAX    %d", session_.maxCombo()), 20, 100, 20, GRAY);
     DrawText(TextFormat("ACC    %.2f%%", session_.accuracy()), 20, 130, 20, RAYWHITE);
+    // 即時 Quaver rating / pp（依判定品質與進度累積；打完 = 結算畫面數字）
+    DrawText(TextFormat("QR     %.2f", liveRating_.quaverRating), 20, 155, 20, PURPLE);
+    DrawText(TextFormat("PP     %.2f", liveRating_.osuPP), 20, 180, 20, GOLD);
     // 下落速度：頂部到底部的毫秒（F3/F4 調整）
     DrawText(TextFormat("SPEED  %.1fx  %.0fms", settings_.scrollSpeed, kScreenH / pxPerMs_), 20,
-             155, 18, Fade(RAYWHITE, 0.7f));
-    if (autoPlay_) DrawText("AUTO", 20, 178, 18, GOLD);
+             205, 18, Fade(RAYWHITE, 0.7f));
+    if (autoPlay_) DrawText("AUTO", 20, 228, 18, GOLD);
 
     const Judgment tiers[] = {Judgment::Perfect, Judgment::Great, Judgment::Good,
                               Judgment::Bad, Judgment::Miss};
-    int hy = 180;
+    int hy = 236;
     for (Judgment t : tiers) {
         DrawText(TextFormat("%-8s %d", judgeName(t), session_.count(t)), 20, hy, 20,
                  judgeColor(t));
@@ -407,9 +416,8 @@ void Game::drawResult() const {
     const int gfs = 160;
     DrawText(g, cx - MeasureText(g, gfs) / 2, 220, gfs, gcol);
 
-    // 計算 Quaver 難度、Rating 以及 osu!mania 星級與 PP
-    const double quaverDiff = quaverDifficulty(map_.notes, map_.keyCount, 1.0f);
-    const RatingEstimate ratingEst = estimateRatings(quaverDiff, session_);
+    // Quaver 難度在建構時已算好（與 HUD 即時計數器同源）；此處只重估最終成績
+    const RatingEstimate ratingEst = estimateRatings(quaverDiff_, session_);
 
     // 左欄：總體數據
     int ly = 430;

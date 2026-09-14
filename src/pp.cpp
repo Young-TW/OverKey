@@ -446,13 +446,6 @@ double quaverDifficulty(const std::vector<ManiaNote>& notes, int keyCount, float
     // 奇數鍵數：左右手各跑一次並平均；第二次運算疊加在累積資料上（上游行為）
     const float a = solver.compute(rate, QHand::Left);
     const float b = solver.compute(rate, QHand::Right);
-    // 對照用（驗證上游行為）：每次運算清空資料 = another interpretation
-    Qss fresh(sorted, keyCount);
-    const float c = fresh.compute(rate, QHand::Left);
-    Qss fresh2(sorted, keyCount);
-    const float d2 = fresh2.compute(rate, QHand::Right);
-    std::fprintf(stderr, "[qss] accumL=%.4f accumR=%.4f freshL=%.4f freshR=%.4f -> accum=%.6f fresh=%.6f\n",
-                 a, b, c, d2, (a + b) / 2.0f, (c + d2) / 2.0f);
     return (a + b) / 2.0;
 }
 

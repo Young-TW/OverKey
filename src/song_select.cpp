@@ -6,6 +6,8 @@
 #include <utility>
 
 #include <raylib.h>
+#include "pp.h"
+#include "map.h"
 
 #include "raii.h"
 #include "render.h"
@@ -210,6 +212,11 @@ void SongSelect::ensureSelectedInfo() {
     if (entries_.empty()) return;
     Entry& e = entries_[selected_];
     if (!e.info) e.info = loadBeatmapInfo(e.path);
+    if (e.info && !e.quaverDiff) {
+        const Beatmap bm = loadBeatmap(e.path);
+        e.quaverDiff = quaverDifficulty(bm.notes, bm.keyCount, 1.0f);
+        e.osuStar = osuEstimateStarRating(*e.quaverDiff);
+    }
 }
 
 void SongSelect::draw() const {
@@ -278,6 +285,12 @@ void SongSelect::draw() const {
         field("TITLE", bi.title.empty() ? e.label : bi.title, 26, RAYWHITE);
         field("ARTIST", bi.artist, 22, Fade(RAYWHITE, 0.85f));
         field("DIFFICULTY", bi.version, 22, GOLD);
+        if (e.quaverDiff && e.osuStar) {
+            DrawText(TextFormat("QUAVER DIFF %.2f", *e.quaverDiff), kPanelX, y, 22, RAYWHITE);
+            y += 30;
+            DrawText(TextFormat("OSU STAR %.2f★", *e.osuStar), kPanelX, y, 22, RAYWHITE);
+            y += 30;
+        }
 
         y += 8;
         const int sec = bi.lengthMs / 1000;

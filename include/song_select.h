@@ -34,6 +34,8 @@ private:
         std::filesystem::path path;
         std::string label;
         std::optional<BeatmapInfo> info;  // 延遲載入並快取
+        std::optional<double> quaverDiff; // 已計算的 Quaver 難度 (cache)
+        std::optional<double> osuStar;    // 對應的 osu!mania 星級 (cache)
     };
 
     void draw() const;

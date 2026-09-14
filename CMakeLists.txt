@@ -52,6 +52,7 @@ add_library(overkey_core STATIC
     src/settings.cpp
     src/scores.cpp
     src/map_import.cpp
+    src/pp.cpp
 )
 target_include_directories(overkey_core PUBLIC ./include)
 # map_import 需要 std::thread；miniz 供 zip 解壓（僅 core 內部用，故 PRIVATE）。
@@ -139,7 +140,7 @@ install(FILES README.md DESTINATION share/doc/OverKey)
 
 # 測試：只編 raylib-free 的 core 原始碼，headless 可跑
 enable_testing()
-add_executable(test_core tests/test_core.cpp src/map.cpp src/play.cpp src/scores.cpp)
+add_executable(test_core tests/test_core.cpp src/map.cpp src/play.cpp src/scores.cpp src/pp.cpp)
 target_include_directories(test_core PRIVATE ./include)
 add_test(NAME core COMMAND test_core)
 

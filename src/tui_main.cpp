@@ -433,6 +433,13 @@ struct CoverResult {
     fs::path path;
 };
 
+// 選單詳情：摘要 + 預先算好的難度（背景執行緒產生）
+struct MenuInfo {
+    BeatmapInfo info;
+    double quaverDiff = 0.0;
+    double osuStar = 0.0;
+};
+
 // 回傳 kMenuQuit=離開、kMenuSettings=設定，否則為選擇的 index
 int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float musicVolume,
             float rate, bool autoPlay, const ScoreBook& scores, MapImporter& importer,
@@ -440,9 +447,9 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
     PixelCanvas canvas(term.cols(), term.rows());
     std::string out;
     Loader loader;  // 常駐背景載入執行緒
-    std::optional<BeatmapInfo> info;
+    std::optional<MenuInfo> info;
     int infoFor = -1;
-    std::future<BeatmapInfo> infoLoad;  // 背景解析中的摘要
+    std::future<MenuInfo> infoLoad;  // 背景解析中的摘要（含難度）
     int infoLoadFor = -1;
 
     std::optional<MusicRes> preview;      // hover 副歌試聽
@@ -509,7 +516,14 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
         if (!entries.empty() && selected != infoFor && selected != infoLoadFor &&
             !infoLoad.valid() && sinceChange > 0.08) {
             infoLoadFor = selected;
-            infoLoad = loader.submit([p = entries[selected].path] { return loadBeatmapInfo(p); });
+            infoLoad = loader.submit([p = entries[selected].path] {
+                MenuInfo mi;
+                mi.info = loadBeatmapInfo(p);
+                const Beatmap bm = loadBeatmap(p);
+                mi.quaverDiff = quaverDifficulty(bm.notes, bm.keyCount, 1.0f);
+                mi.osuStar = osuEstimateStarRating(mi.quaverDiff);
+                return mi;
+            });
         }
         if (infoLoad.valid() &&
             infoLoad.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
@@ -524,15 +538,15 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
             std::chrono::duration<double>(Clock::now() - selChangedAt).count() > 0.25;
         if (settled) {
             fs::path desired;
-            if (!info->audioFilename.empty())
-                desired = entries[selected].path.parent_path() / info->audioFilename;
+            if (!info->info.audioFilename.empty())
+                desired = entries[selected].path.parent_path() / info->info.audioFilename;
             if (desired.empty()) {  // 無音檔 → 停播
                 preview.reset();
                 previewPath.clear();
             } else if (desired != previewPath && desired != pendingPath && !pendingLoad.valid()) {
                 pendingPath = desired;
                 pendingLoad = loader.submit(
-                    [p = desired.string(), pv = info->previewTimeMs, vol = musicVolume] {
+                    [p = desired.string(), pv = info->info.previewTimeMs, vol = musicVolume] {
                         PreviewLoad pl;
                         pl.music = LoadMusicStream(p.c_str());
                         if (pl.music.stream.buffer) {  // 慢速的 seek 也在背景做，避免卡主迴圈
@@ -550,8 +564,8 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
             pendingLoad.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
             PreviewLoad pl = pendingLoad.get();
             fs::path curDesired;
-            if (settled && info && !info->audioFilename.empty())
-                curDesired = entries[selected].path.parent_path() / info->audioFilename;
+            if (settled && info && !info->info.audioFilename.empty())
+                curDesired = entries[selected].path.parent_path() / info->info.audioFilename;
             if (pl.music.stream.buffer && pendingPath == curDesired) {
                 Music old = preview ? preview->release() : Music{};
                 preview.emplace(pl.music);  // 已在背景播放並定位到副歌點
@@ -573,8 +587,8 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
         // 封面（kitty graphics）：停穩後於背景執行緒解碼（避免阻塞主迴圈）
         if (settled) {
             fs::path desired;
-            if (!info->backgroundFilename.empty()) {
-                const fs::path bg = entries[selected].path.parent_path() / info->backgroundFilename;
+            if (!info->info.backgroundFilename.empty()) {
+                const fs::path bg = entries[selected].path.parent_path() / info->info.backgroundFilename;
                 std::error_code ec;
                 if (fs::exists(bg, ec)) desired = bg;
             }
@@ -645,12 +659,17 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
                 const int px = term.cols() / 2 + 2;
                 // 有封面時文字排在封面下方
                 int y = coverRows > 0 ? (coverRow - 1 + coverRows + 1) : 4;
-                canvas.putText(px, y++, ellipsize(info->title, term.cols() - px - 1), kWhite);
-                canvas.putText(px, y++, ellipsize(info->artist, term.cols() - px - 1), kGray);
-                canvas.putText(px, y++, ellipsize(info->version, term.cols() - px - 1), kGold);
+                canvas.putText(px, y++, ellipsize(info->info.title, term.cols() - px - 1), kWhite);
+                canvas.putText(px, y++, ellipsize(info->info.artist, term.cols() - px - 1), kGray);
+                canvas.putText(px, y++, ellipsize(info->info.version, term.cols() - px - 1), kGold);
+                char difbuf[48];
+                std::snprintf(difbuf, sizeof(difbuf), "Q Diff  %.2f", info->quaverDiff);
+                canvas.putText(px, y++, difbuf, kSky);
+                std::snprintf(difbuf, sizeof(difbuf), "osu!    %.2f*", info->osuStar);
+                canvas.putText(px, y++, difbuf, kSky);
                 ++y;
-                const int sec = info->lengthMs / 1000;
-                canvas.putText(px, y++, "notes  " + std::to_string(info->noteCount), kWhite);
+                const int sec = info->info.lengthMs / 1000;
+                canvas.putText(px, y++, "notes  " + std::to_string(info->info.noteCount), kWhite);
                 char buf[48];
                 std::snprintf(buf, sizeof(buf), "length %d:%02d", sec / 60, sec % 60);
                 canvas.putText(px, y++, buf, kWhite);

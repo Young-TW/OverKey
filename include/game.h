@@ -57,11 +57,13 @@ private:
     Phase phase_ = Phase::Playing;
     int pauseSel_ = 0;  // 暫停選單選項：0 Resume / 1 Retry / 2 Quit
 
-    // 遊戲中即時 pp / Quaver rating 計數器：難度每局只算一次，推估值每幀更新。
-    // 語意＝目前判定品質推估整場，再依判定進度縮放（見 pp.h estimateLiveRatings）；
-    // 打完時（進度=1）即結算畫面顯示的數字。
+    // 遊戲中即時 pp / Quaver rating 計數器：整場難度（quaverDiff_，結算用）
+    // 每局只算一次；即時值對「從頭到此刻的譜面前綴」重跑 QSS（節流 kLiveIntervalSec），
+    // 見 pp.h estimateLiveRatings。打完時（前綴=整張圖）即結算畫面顯示的數字。
+    static constexpr double kLiveIntervalSec = 0.25;  // 前綴 QSS 重算節流
     double quaverDiff_ = 0.0;
     RatingEstimate liveRating_{};
+    double liveCalcAt_ = -1.0e9;  // 上次重算的牆鐘時間（GetTime()）
 
     // 命中回饋（用牆鐘計時，與遊戲邏輯時鐘分開）；上限 7 軌
     std::array<double, 7> laneFlash_{};

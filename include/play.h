@@ -71,7 +71,6 @@ public:
     int combo() const { return combo_; }
     int maxCombo() const { return maxCombo_; }
     int count(Judgment j) const { return counts_[static_cast<int>(j)]; }
-    int totalUnits() const { return totalUnits_; }  // 全部判定單位（長押頭尾各計一次）
     Judgment lastJudgment() const { return lastJudge_; }
     double accuracy() const;  // 0..100
     const char* grade() const;

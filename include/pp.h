@@ -56,10 +56,13 @@ struct RatingEstimate {
 };
 RatingEstimate estimateRatings(double quaverDiff, const PlaySession& session);
 
-// 遊戲中即時計數器用：與 estimateRatings 相同方法推估整場成績，再依遊玩進度
-// （已判定單位 / 全部單位）線性縮放 quaverRating / osuPP。
-// 語意：開局為 0、大致隨進度成長、失誤即時反映；打完時（進度=1）與
-// estimateRatings 完全一致，即結算畫面顯示的數字。
-RatingEstimate estimateLiveRatings(double quaverDiff, const PlaySession& session);
+// 遊戲中即時計數器用：取譜面從頭到 songTimeMs 的音符前綴，對前綴重算
+// QSS 難度／推估 SR，配上目前累積的判定 acc 估值（非線性縮放——反映的是
+// 所玩段落的實際 strain 密度，數字會隨段落難度起伏）。
+// 每次呼叫皆為一次完整 QSS（6k 音符 ≈ 2ms），呼叫端應節流（~0.25s 一次）。
+// rate 恆 1.0，與選歌/結算一致；打完時（前綴=整張圖）與
+// estimateRatings(quaverDifficulty(整圖), session) 完全一致。
+RatingEstimate estimateLiveRatings(const PlaySession& session, int keyCount,
+                                   double songTimeMs);
 
 #endif

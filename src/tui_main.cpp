@@ -761,6 +761,11 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
     double fAvg = 0, fLow1 = 0, fLow01 = 0;
     int fpsTick = 0;
 
+    // HUD 即時 pp / Quaver rating 計數器：對譜面前綴重跑 QSS（成本毫秒級）→ 節流
+    constexpr auto kLiveInterval = std::chrono::milliseconds(250);
+    RatingEstimate liveEst;
+    auto liveCalcAt = Clock::time_point{};  // epoch → 第一幀立即重算
+
     // 圓形音符 kitty 版（shape==2）：每軌一張圓，開場先傳輸；離開時清除
     if (settings.noteShape == 2) term.write(transmitLaneCircles(keyCount));
     // 譜面背景圖（kitty graphics）：開場傳輸一次，每幀放置到軌道兩側
@@ -785,6 +790,7 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
             StopMusicStream(music.get());
         }
         session = PlaySession(map.notes);
+        liveCalcAt = Clock::time_point{};  // 讓 HUD 即時計數器下一幀立即重算
         clock = SongClock{kLeadInMs};
         clock.setRate(rate);
         musicStarted = false;
@@ -957,6 +963,11 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
                 anyHit = true;
             }
             if (anyHit) PlaySound(hitSound);
+            // HUD 即時 pp / Quaver rating：節流重算，其餘幀沿用上次結果
+            if (frameStart - liveCalcAt >= kLiveInterval) {
+                liveCalcAt = frameStart;
+                liveEst = estimateLiveRatings(session, keyCount, songTimeMs);
+            }
             if (session.finished(songTimeMs)) {
                 playing = false;
                 if (!recorded && !rateModded(rate) && !autoPlay) {  // auto/rate mod 局不計入 best
@@ -1077,8 +1088,7 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
             canvas.putText(1, 1, buf, session.combo() > 0 ? kGold : kGray);
             std::snprintf(buf, sizeof(buf), "ACC %.2f%%", session.accuracy());
             canvas.putText(1, 2, buf, kWhite);
-            // 即時 Quaver rating / pp（依判定品質與進度累積；打完 = 結算畫面數字）
-            const RatingEstimate liveEst = estimateLiveRatings(quaverDiff, session);
+            // 即時 Quaver rating / pp（前綴重算，節流快取於 update 區塊）
             std::snprintf(buf, sizeof(buf), "QR %.2f", liveEst.quaverRating);
             canvas.putText(1, 3, buf, kPurple);
             std::snprintf(buf, sizeof(buf), "PP %.2f", liveEst.osuPP);

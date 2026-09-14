@@ -93,9 +93,8 @@ Game::Game(Beatmap map, std::filesystem::path audioPath, Settings settings,
       approachMs_(kBaseApproachMs / settings.scrollSpeed),
       pxPerMs_(kJudgeY / approachMs_) {
     laneFlash_.fill(-10.0);
-    // HUD 即時計數器用的難度（rate 恆 1.0，與結算畫面一致）；QSS 較重，每局只算一次
+    // 結算與難度顯示用的整場難度（rate 恆 1.0，與選歌畫面一致）；每局只算一次
     quaverDiff_ = quaverDifficulty(map_.notes, map_.keyCount, 1.0f);
-    liveRating_ = estimateRatings(quaverDiff_, session_);
 }
 
 void Game::run(Viewport& vp) {
@@ -132,6 +131,7 @@ void Game::run(Viewport& vp) {
         session_ = PlaySession(map_.notes);
         phase_ = Phase::Playing;
         laneFlash_.fill(-10.0);
+        liveCalcAt_ = -1.0e9;  // 讓 HUD 即時計數器下一幀立即重算
         clock = SongClock{kLeadInMs};
         clock.setRate(rate_);
         musicStarted = false;
@@ -226,8 +226,13 @@ void Game::run(Viewport& vp) {
             }
             if (anyHit) PlaySound(hitSound->get());
 
-            // HUD 即時 pp / Quaver rating（很輕：幾個計數 + pow，每幀可負擔）
-            liveRating_ = estimateLiveRatings(quaverDiff_, session_);
+            // HUD 即時 pp / Quaver rating：對譜面前綴重跑 QSS，成本隨進度成長
+            // （毫秒級）→ 節流；其餘幀沿用上次結果
+            const double nowWall = GetTime();
+            if (nowWall - liveCalcAt_ >= kLiveIntervalSec) {
+                liveCalcAt_ = nowWall;
+                liveRating_ = estimateLiveRatings(session_, keyCount_, songTimeMs);
+            }
 
             if (session_.finished(songTimeMs)) {
                 phase_ = Phase::Result;
@@ -359,7 +364,7 @@ void Game::drawPlayfield(double songTimeMs) const {
              session_.combo() > 0 ? GOLD : GRAY);
     DrawText(TextFormat("MAX    %d", session_.maxCombo()), 20, 100, 20, GRAY);
     DrawText(TextFormat("ACC    %.2f%%", session_.accuracy()), 20, 130, 20, RAYWHITE);
-    // 即時 Quaver rating / pp（依判定品質與進度累積；打完 = 結算畫面數字）
+    // 即時 Quaver rating / pp（前綴重算，節流快取於 update 區塊；打完 = 結算數字）
     DrawText(TextFormat("QR     %.2f", liveRating_.quaverRating), 20, 155, 20, PURPLE);
     DrawText(TextFormat("PP     %.2f", liveRating_.osuPP), 20, 180, 20, GOLD);
     // 下落速度：頂部到底部的毫秒（F3/F4 調整）

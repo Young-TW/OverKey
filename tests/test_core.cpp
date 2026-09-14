@@ -1,5 +1,6 @@
 // 前端無關 core 的單元測試：map 解析、PlaySession 判定/計分、SongClock。
 // 不依賴 raylib 視窗/音訊，可 headless 執行。極簡 assert 框架。
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -287,40 +288,37 @@ void testScores() {
     }
 }
 
-// 即時 pp / Quaver rating 計數器語意：從 0 開始、隨判定進度成長，
-// 全部判定完成時與整場估計（estimateRatings，結算畫面用）一致。
+// 即時 pp / Quaver rating 計數器語意：每次以「從頭到此刻的譜面前綴」重算
+// 難度配上目前的判定 acc；前綴為空時為 0，打完時（前綴=整張圖）與
+// estimateRatings(整圖難度) ——即結算畫面數字——一致。
 void testLiveRatings() {
     std::printf("live ratings\n");
-    constexpr double kDiff = 10.0;  // 任意難度值；本測試不驗證 QSS 本身
     const std::vector<ManiaNote> notes = {{0, 1000, -1}, {1, 2000, -1}, {2, 3000, -1},
-                                          {3, 4000, 4500}};  // 3 tap + 1 LN = 5 units
+                                          {3, 4000, 4500}};  // 3 tap + 1 LN
     PlaySession s(notes);
-    CHECK(s.totalUnits() == 5);
 
-    // 0 判定：兩個計數器都是 0（回歸：第一個判定前不得顯示滿額估計）
-    RatingEstimate live = estimateLiveRatings(kDiff, s);
+    // 前綴為空（第一個音符還沒到）：兩個計數器都是 0，且不得出現 NaN/inf
+    RatingEstimate live = estimateLiveRatings(s, 7, 500.0);
     CHECK(live.quaverRating == 0.0 && live.osuPP == 0.0);
 
-    // 打完第一個 note：非零、但遠小於整場（進度 1/5）
+    // 極短前綴（1~2 顆音符）：此處是 QSS continuity 正規化的退化路徑，
+    // 必須回傳有限值（回歸：即時重算常態性遇到 <1s 前綴）
     s.press(0, 1000);
-    live = estimateLiveRatings(kDiff, s);
-    CHECK(live.quaverRating > 0.0 && live.osuPP > 0.0);
-    const RatingEstimate partial = live;
-
-    // 全數打完（LN 按住到尾 → 尾 Perfect）
+    live = estimateLiveRatings(s, 7, 1000.0);  // 前綴 1 顆
+    CHECK(std::isfinite(live.quaverRating) && std::isfinite(live.osuPP));
     s.press(1, 2000);
+    live = estimateLiveRatings(s, 7, 2100.0);  // 前綴 2 顆、acc 已累積
+    CHECK(std::isfinite(live.quaverRating) && std::isfinite(live.osuPP));
+    CHECK(live.quaverRating > 0.0);
+
+    // 全數打完（LN 按住到尾 → 尾 Perfect）：前綴=整張圖 → 與結算數字一致
     s.press(2, 3000);
     s.press(3, 4000);
     s.advance(4500);
-    live = estimateLiveRatings(kDiff, s);
-    const RatingEstimate full = estimateRatings(kDiff, s);
-
-    // 進度=1 → 即時計數器 = 結算數字（進度縮放為恰 ×1.0）
+    live = estimateLiveRatings(s, 7, 1.0e9);
+    const RatingEstimate full = estimateRatings(quaverDifficulty(notes, 7, 1.0f), s);
     CHECK(live.quaverRating == full.quaverRating);
     CHECK(live.osuPP == full.osuPP);
-    // 且整場 > 中途
-    CHECK(full.quaverRating > partial.quaverRating);
-    CHECK(full.osuPP > partial.osuPP);
 }
 
 }  // namespace

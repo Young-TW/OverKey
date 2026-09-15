@@ -25,7 +25,8 @@ logic core**: a graphical version (raylib) and a terminal version (TUI). Support
 - **Long notes** with press/hold/release judging.
 - **Smooth, constant-velocity scroll clock** (frame-delta driven, audio used only as a
   drift anchor — no judder from the quantized audio position).
-- **Song select** with metadata panel and **chorus preview** on hover (osu `PreviewTime`).
+- **Song select** with metadata panel and **chorus preview** on hover (osu `PreviewTime`),
+  plus **live search** (press `/`, type to filter artist/title/difficulty, `Esc` clears).
 - **Settings** (persisted to `overkey.cfg`, shared by both frontends): audio offset,
   scroll speed, music/effect volume, per-lane keybinds for 4K and 7K.
 - **Result screen**: grade, accuracy, per-tier counts, timing-error histogram, and a
@@ -148,6 +149,7 @@ If your npm blocks install scripts and `require("realm")` fails afterwards, run
 | Scroll speed | `3` slower / `4` faster (also F3/F4) | `3` / `4` |
 | Settings (from menu) | `Tab` | `Tab` |
 | Fullscreen toggle (GUI) | `F11` | — |
+| Search maps (in menu) | `/`, Esc clears | `/`, Esc clears |
 | Menu navigate | `↑ ↓`, Enter, Esc | `↑↓` or `j k`, Enter, `q` |
 
 The **TUI requires a terminal that supports the Kitty keyboard protocol** (kitty,

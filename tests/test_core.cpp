@@ -10,6 +10,7 @@
 #include "play.h"
 #include "pp.h"
 #include "scores.h"
+#include "strutil.h"
 
 namespace fs = std::filesystem;
 
@@ -321,6 +322,36 @@ void testLiveRatings() {
     CHECK(live.osuPP == full.osuPP);
 }
 
+// 選單搜尋用的字串工具：不分大小寫子字串比對 + UTF-8 輸入編輯
+void testStrutil() {
+    std::printf("strutil\n");
+    // 大小寫不敏感子字串（清單標籤格式 "Artist - Title [Diff]"）
+    CHECK(strutil::icontains("xi - FREEDOM DiVE [4K]", "freedom"));
+    CHECK(strutil::icontains("Camellia - Ghost [7K EX]", "ghost"));
+    CHECK(strutil::icontains("Camellia - Ghost [7K EX]", "ex]"));
+    CHECK(!strutil::icontains("abc", "abcd"));
+    CHECK(strutil::icontains("any", ""));       // 空 query 不篩
+    CHECK(!strutil::icontains("", "x"));
+    // UTF-8 標籤：位元組子字串比對（東方 = \xE6\x9D\xB1\xE6\x96\xB9）
+    CHECK(strutil::icontains("IOSYS - \xE6\x9D\xB1\xE6\x96\xB9 arrange", "\xE6\x9D\xB1\xE6\x96\xB9"));
+    CHECK(!strutil::icontains("xi - Parousia", "\xE6\x9D\xB1\xE6\x96\xB9"));
+
+    // appendUtf8 / popUtf8：ASCII、三位元組（中 U+4E2D）、四位元組（U+1F600）
+    std::string s;
+    strutil::appendUtf8(s, 'A');
+    strutil::appendUtf8(s, 0x4E2D);
+    strutil::appendUtf8(s, 0x1F600);
+    CHECK(s == "A\xE4\xB8\xAD\xF0\x9F\x98\x80");
+    strutil::popUtf8(s);
+    CHECK(s == "A\xE4\xB8\xAD");
+    strutil::popUtf8(s);
+    CHECK(s == "A");
+    strutil::popUtf8(s);
+    CHECK(s.empty());
+    strutil::popUtf8(s);  // 空字串安全
+    CHECK(s.empty());
+}
+
 }  // namespace
 
 int main() {
@@ -333,6 +364,7 @@ int main() {
     testSongClockPastAudioEnd();
     testLiveRatings();
     testScores();
+    testStrutil();
 
     std::error_code ec;
     fs::remove_all(fs::temp_directory_path() / "overkey_test", ec);

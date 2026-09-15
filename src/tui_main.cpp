@@ -21,6 +21,7 @@
 #include "raii.h"
 #include "scores.h"
 #include "settings.h"
+#include "strutil.h"
 #include "tui.h"
 #include "pp.h"
 
@@ -473,6 +474,31 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
     const int coverCol = term.cols() / 2 + 2;  // 面板起始欄（1-based）
     const int coverRow = 4;                     // 面板起始列（1-based）
 
+    // 搜尋（/ 進入、Esc 清除）：query 為即時子字串篩選；filtered 存 entries 索引
+    std::string query;
+    bool searching = false;
+    std::vector<int> filtered;
+    bool filterDirty = true;
+    std::size_t lastCount = 0;
+    auto refilter = [&] {
+        filtered.clear();
+        for (int i = 0; i < static_cast<int>(entries.size()); ++i)
+            if (query.empty() || strutil::icontains(entries[i].label, query))
+                filtered.push_back(i);
+        if (!filtered.empty() &&
+            std::find(filtered.begin(), filtered.end(), selected) == filtered.end())
+            selected = filtered[0];  // 舊選取被篩掉 → 跳到第一個符合項
+        filterDirty = false;
+        lastCount = entries.size();
+    };
+    auto stepSel = [&](int dir) {  // 在 filtered 視圖內移動（環狀）
+        if (filtered.empty()) return;
+        const auto it = std::find(filtered.begin(), filtered.end(), selected);
+        const int pos = (it == filtered.end()) ? 0 : static_cast<int>(it - filtered.begin());
+        const int n = static_cast<int>(filtered.size());
+        selected = filtered[((pos + dir) % n + n) % n];
+    };
+
     // 離開選單前刪除 kitty 圖片，避免殘留到遊玩畫面
     auto leave = [&](int r) {
         if (!coverPath.empty()) term.write(kKittyDeleteAll);
@@ -493,19 +519,51 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
             canvas.resize(term.cols(), term.rows());
 
         ingestNewMaps(importer, mapsDir, entries, selected);  // 背景解壓的新譜面即時進清單
+        if (filterDirty || entries.size() != lastCount) refilter();
 
         for (const KeyEvent& e : term.poll()) {
             if (e.type != KeyEvent::Press) continue;
-            if (e.code == 27 || e.code == 'q' || e.code == 3) return leave(kMenuQuit);
+            if (e.code == 3) return leave(kMenuQuit);  // Ctrl-C 任何狀態都離開
+            if (searching) {  // 搜尋輸入模式：字元優先，命令鍵讓位
+                if (e.code == 27) {  // Esc：清掉搜尋（再按一次才離開選單）
+                    searching = false;
+                    if (!query.empty()) {
+                        query.clear();
+                        filterDirty = true;
+                    }
+                    continue;
+                }
+                if (e.code == 13) {  // Enter 直接遊玩目前選取
+                    if (!filtered.empty()) return leave(selected);
+                    continue;
+                }
+                if (e.code == kKeyUp) { stepSel(-1); continue; }
+                if (e.code == kKeyDown) { stepSel(1); continue; }
+                if (e.code == 127 || e.code == 8) {  // Backspace 刪一個字
+                    if (!query.empty()) {
+                        strutil::popUtf8(query);
+                        filterDirty = true;
+                    }
+                    continue;
+                }
+                // 可列印字元與 unicode codepoint（kitty CSI-u）；排除 PUA 功能鍵
+                if (e.code >= 32 && !(e.code >= 0xD800 && e.code <= 0xF8FF) &&
+                    e.code <= 0x10FFFF) {
+                    strutil::appendUtf8(query, static_cast<uint32_t>(e.code));
+                    filterDirty = true;
+                }
+                continue;
+            }
+            if (e.code == '/') { searching = true; continue; }
+            if (e.code == 27 || e.code == 'q') return leave(kMenuQuit);
             if (e.code == 9) return leave(kMenuSettings);  // Tab
             if (e.code == 'm') return leave(kMenuMods);
-            if (entries.empty()) continue;
-            if (e.code == 'j' || e.code == kKeyDown)
-                selected = (selected + 1) % entries.size();
-            if (e.code == 'k' || e.code == kKeyUp)
-                selected = (selected + entries.size() - 1) % entries.size();
+            if (filtered.empty()) continue;
+            if (e.code == 'j' || e.code == kKeyDown) stepSel(1);
+            if (e.code == 'k' || e.code == kKeyUp) stepSel(-1);
             if (e.code == 13 || e.code == 32) return leave(selected);
         }
+        if (filterDirty) refilter();
         if (selected != lastSel) {  // 換選取：重啟防抖（先不停試聽）
             lastSel = selected;
             selChangedAt = Clock::now();
@@ -514,7 +572,7 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
         // 譜面摘要於背景執行緒解析；停穩 80ms 才啟動，避免連續捲動時每步都生執行緒
         const double sinceChange =
             std::chrono::duration<double>(Clock::now() - selChangedAt).count();
-        if (!entries.empty() && selected != infoFor && selected != infoLoadFor &&
+        if (!filtered.empty() && selected != infoFor && selected != infoLoadFor &&
             !infoLoad.valid() && sinceChange > 0.08) {
             infoLoadFor = selected;
             infoLoad = loader.submit([p = entries[selected].path] {
@@ -531,7 +589,7 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
             info = infoLoad.get();
             infoFor = infoLoadFor;
         }
-        const bool infoReady = info.has_value() && infoFor == selected;
+        const bool infoReady = !filtered.empty() && info.has_value() && infoFor == selected;
 
         // 副歌試聽：停穩後於背景執行緒載入音檔（避免讀檔阻塞主迴圈導致舊試聽破音）
         const bool settled =
@@ -633,7 +691,15 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
 
         canvas.clear();
         canvas.putText(2, 1, "OVERKEY  (TUI)", kGold);
-        canvas.putText(2, 2, "up/down move   enter play   m mods   tab settings   q quit", kGray);
+        canvas.putText(2, 2,
+                       searching ? "type to filter   enter play   esc clear"
+                                 : "up/down move   enter play   / search   m mods   "
+                                   "tab settings   q quit",
+                       kGray);
+        if (searching || !query.empty()) {  // 搜尋狀態列
+            const std::string line = "search: " + query + (searching ? "_" : "");
+            canvas.putText(2, 3, line, searching ? kGold : kGray);
+        }
         if (rateModded(rate)) {  // 有開 mod 時提示
             char rbuf[24];
             std::snprintf(rbuf, sizeof(rbuf), "RATE %.2fx", rate);
@@ -641,16 +707,21 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
         }
         if (autoPlay) canvas.putText(term.cols() / 2 - 2, 2, "AUTO", kGold);
 
-        if (entries.empty()) {
-            canvas.putText(2, 4, "no mania 4K/7K maps found", judgeRgb(Judgment::Miss));
+        if (filtered.empty()) {
+            canvas.putText(2, 4,
+                           query.empty() ? "no mania 4K/7K maps found" : "no match",
+                           judgeRgb(Judgment::Miss));
         } else {
             const int top = 4;
             const int visible = term.rows() - top - 2;
-            int scroll = std::max(0, selected - visible / 2);
-            scroll = std::min(scroll, std::max(0, (int)entries.size() - visible));
+            const auto selIt = std::find(filtered.begin(), filtered.end(), selected);
+            const int selPos =
+                (selIt == filtered.end()) ? 0 : static_cast<int>(selIt - filtered.begin());
+            int scroll = std::max(0, selPos - visible / 2);
+            scroll = std::min(scroll, std::max(0, (int)filtered.size() - visible));
             const int listW = term.cols() / 2 - 2;
-            for (int i = 0; i < visible && scroll + i < (int)entries.size(); ++i) {
-                const int idx = scroll + i;
+            for (int i = 0; i < visible && scroll + i < (int)filtered.size(); ++i) {
+                const int idx = filtered[scroll + i];
                 const bool sel = (idx == selected);
                 std::string line =
                     (sel ? "> " : "  ") + ellipsize(entries[idx].label, listW - 2);

@@ -43,13 +43,18 @@ private:
     void ensureSelectedInfo();  // 確保目前選取項的摘要已載入
     bool makeEntry(const std::filesystem::path& p, Entry& out) const;  // 探測+標籤，不支援回傳 false
     void ingestNewMaps();       // 撈背景匯入器新解出的譜面，插進清單（保留目前選取）
+    void refilter(const std::filesystem::path& preserve);  // 依 query_ 重建篩選，盡量保留選取項
+    std::filesystem::path selectedPath() const;  // 目前選取項的路徑（無符合時回空）
 
     std::filesystem::path mapsDir_;
     MapImporter importer_;  // 背景解壓 .osz/.qp
     std::vector<Entry> entries_;
+    std::vector<int> filtered_;      // entries_ 中符合 query_ 的索引（空 query＝全部）
     const ScoreBook* scores_ = nullptr;  // 詳情面板顯示最佳成績用（run 期間有效）
-    int selected_ = 0;
+    int selected_ = 0;               // 為 filtered_ 視圖中的位置（非 entries_ 索引）
     int scroll_ = 0;
+    std::string query_;              // 搜尋關鍵字（即時子字串篩選清單）
+    bool searching_ = false;         // 搜尋輸入模式（/ 進入，Esc 清除離開）
     bool autoPlay_ = false;  // 供 draw() 顯示指示器
     float rate_ = 1.0f;
 };

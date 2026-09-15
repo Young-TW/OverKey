@@ -12,6 +12,7 @@
 #include "raii.h"
 #include "render.h"
 #include "song_select.h"
+#include "strutil.h"
 
 namespace {
 constexpr double kPreviewDebounce = 0.25;  // hover 後延遲多久才載入試聽，避免快速捲動狂載
@@ -43,6 +44,7 @@ SongSelect::SongSelect(std::filesystem::path mapsDir)
     }
     std::sort(entries_.begin(), entries_.end(),
               [](const Entry& a, const Entry& b) { return a.label < b.label; });
+    refilter({});  // 空 query → 全清單
     importer_.start();  // 開背景執行緒掃描/解壓 .osz/.qp，執行期間增量餵進清單
 }
 
@@ -62,8 +64,7 @@ void SongSelect::ingestNewMaps() {
     if (fresh.empty()) return;
 
     // 重排會打亂索引，先記住目前選取項的路徑，插完再依路徑還原選取。
-    const std::filesystem::path selPath =
-        entries_.empty() ? std::filesystem::path{} : entries_[selected_].path;
+    const std::filesystem::path selPath = selectedPath();
 
     for (const auto& p : fresh) {
         if (std::any_of(entries_.begin(), entries_.end(),
@@ -74,18 +75,34 @@ void SongSelect::ingestNewMaps() {
     }
     std::sort(entries_.begin(), entries_.end(),
               [](const Entry& a, const Entry& b) { return a.label < b.label; });
+    refilter(selPath);  // 依現有 query 重建篩選並還原選取
+}
 
-    if (!selPath.empty()) {
-        const auto it = std::find_if(entries_.begin(), entries_.end(),
-                                     [&](const Entry& e) { return e.path == selPath; });
-        if (it != entries_.end()) selected_ = static_cast<int>(it - entries_.begin());
+void SongSelect::refilter(const std::filesystem::path& preserve) {
+    filtered_.clear();
+    for (int i = 0; i < static_cast<int>(entries_.size()); ++i)
+        if (query_.empty() || strutil::icontains(entries_[i].label, query_))
+            filtered_.push_back(i);
+    selected_ = 0;
+    if (!preserve.empty()) {
+        for (int v = 0; v < static_cast<int>(filtered_.size()); ++v)
+            if (entries_[filtered_[v]].path == preserve) {
+                selected_ = v;
+                break;
+            }
     }
+    scroll_ = 0;
     clampScroll();
 }
 
+std::filesystem::path SongSelect::selectedPath() const {
+    if (filtered_.empty()) return {};
+    return entries_[filtered_[selected_]].path;
+}
+
 void SongSelect::clampScroll() {
-    if (entries_.empty()) return;
-    selected_ = std::clamp(selected_, 0, static_cast<int>(entries_.size()) - 1);
+    if (filtered_.empty()) return;
+    selected_ = std::clamp(selected_, 0, static_cast<int>(filtered_.size()) - 1);
     const int visible = (kVirtualH - kListTop - kListBottom) / kRowH;
     if (selected_ < scroll_) scroll_ = selected_;
     if (selected_ >= scroll_ + visible) scroll_ = selected_ - visible + 1;
@@ -109,16 +126,37 @@ MenuResult SongSelect::run(Viewport& vp, float musicVolume, const ScoreBook& sco
     std::filesystem::path coverPath;        // 已載入的封面檔（空＝無）
     int lastSel = selected_;
 
+    // 每次回選單重置搜尋狀態，並重建篩選視圖
+    query_.clear();
+    searching_ = false;
+    refilter({});
+
     while (!WindowShouldClose()) {
         ingestNewMaps();  // 背景解壓的新譜面即時進清單
         syncMods();
         if (IsKeyPressed(KEY_F11)) ToggleBorderlessWindowed();
-        if (!entries_.empty()) {
+
+        // 文字輸入：搜尋模式吃進 query，否則丟棄（避免佇列積壓進入搜尋時噴出）
+        for (int ch = GetCharPressed(); ch > 0; ch = GetCharPressed()) {
+            if (!searching_ || ch < 32) continue;
+            const std::filesystem::path keep = selectedPath();
+            strutil::appendUtf8(query_, static_cast<uint32_t>(ch));
+            refilter(keep);
+        }
+        if (searching_ && IsKeyPressed(KEY_BACKSPACE) && !query_.empty()) {
+            const std::filesystem::path keep = selectedPath();
+            strutil::popUtf8(query_);
+            refilter(keep);
+        }
+        if (!searching_ && (IsKeyPressed(KEY_SLASH) || IsKeyPressed(KEY_KP_DIVIDE)))
+            searching_ = true;
+
+        if (!filtered_.empty()) {
             if (IsKeyPressed(KEY_DOWN)) ++selected_;
             if (IsKeyPressed(KEY_UP)) --selected_;
             selected_ -= GetMouseWheelMove() > 0 ? 1 : (GetMouseWheelMove() < 0 ? -1 : 0);
-            selected_ = (selected_ + static_cast<int>(entries_.size())) %
-                        static_cast<int>(entries_.size());
+            selected_ = (selected_ + static_cast<int>(filtered_.size())) %
+                        static_cast<int>(filtered_.size());
             clampScroll();
             ensureSelectedInfo();
             if (selected_ != lastSel) {  // 換選取：重啟防抖（先不停試聽）
@@ -127,19 +165,32 @@ MenuResult SongSelect::run(Viewport& vp, float musicVolume, const ScoreBook& sco
             }
 
             if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER)) {
-                return {MenuAction::Play, entries_[selected_].path};
+                return {MenuAction::Play, entries_[filtered_[selected_]].path};
             }
         }
         if (IsKeyPressed(KEY_TAB)) return {MenuAction::Settings, {}};
-        if (IsKeyPressed(KEY_M)) autoPlay = !autoPlay;  // 切換 auto-play
-        if (IsKeyPressed(KEY_LEFT)) rate = std::max(0.5f, std::round((rate - 0.05f) / 0.05f) * 0.05f);
-        if (IsKeyPressed(KEY_RIGHT)) rate = std::min(2.0f, std::round((rate + 0.05f) / 0.05f) * 0.05f);
-        if (IsKeyPressed(KEY_ESCAPE)) return {MenuAction::Quit, {}};
+        if (!searching_) {  // 搜尋輸入時字母/方向鍵讓給打字與清單導覽
+            if (IsKeyPressed(KEY_M)) autoPlay = !autoPlay;  // 切換 auto-play
+            if (IsKeyPressed(KEY_LEFT)) rate = std::max(0.5f, std::round((rate - 0.05f) / 0.05f) * 0.05f);
+            if (IsKeyPressed(KEY_RIGHT)) rate = std::min(2.0f, std::round((rate + 0.05f) / 0.05f) * 0.05f);
+        }
+        if (IsKeyPressed(KEY_ESCAPE)) {
+            if (searching_) {  // 先清搜尋，再按一次才離開
+                const std::filesystem::path keep = selectedPath();
+                searching_ = false;
+                if (!query_.empty()) {
+                    query_.clear();
+                    refilter(keep);
+                }
+            } else {
+                return {MenuAction::Quit, {}};
+            }
+        }
 
         // 副歌試聽：停穩超過防抖時間後，只有「音訊檔不同」才重載
         //（同一首歌切不同難度→音訊檔相同→續播不重啟）
-        if (!entries_.empty() && GetTime() - selChangedAt > kPreviewDebounce) {
-            const Entry& e = entries_[selected_];
+        if (!filtered_.empty() && GetTime() - selChangedAt > kPreviewDebounce) {
+            const Entry& e = entries_[filtered_[selected_]];
             std::filesystem::path desired;
             if (e.info && !e.info->audioFilename.empty())
                 desired = e.path.parent_path() / e.info->audioFilename;
@@ -171,8 +222,8 @@ MenuResult SongSelect::run(Viewport& vp, float musicVolume, const ScoreBook& sco
         }
 
         // 封面圖：停穩後只有「檔案不同」才重載
-        if (!entries_.empty() && GetTime() - selChangedAt > kPreviewDebounce) {
-            const Entry& e = entries_[selected_];
+        if (!filtered_.empty() && GetTime() - selChangedAt > kPreviewDebounce) {
+            const Entry& e = entries_[filtered_[selected_]];
             std::filesystem::path desired;
             if (e.info && !e.info->backgroundFilename.empty())
                 desired = e.path.parent_path() / e.info->backgroundFilename;
@@ -209,8 +260,8 @@ MenuResult SongSelect::run(Viewport& vp, float musicVolume, const ScoreBook& sco
 }
 
 void SongSelect::ensureSelectedInfo() {
-    if (entries_.empty()) return;
-    Entry& e = entries_[selected_];
+    if (filtered_.empty()) return;
+    Entry& e = entries_[filtered_[selected_]];
     if (!e.info) e.info = loadBeatmapInfo(e.path);
     if (e.info && !e.quaverDiff) {
         const Beatmap bm = loadBeatmap(e.path);
@@ -250,9 +301,9 @@ void SongSelect::draw() const {
         return;
     }
 
-    // 左側清單
+    // 左側清單（只畫符合 query_ 的項）
     const int visible = (kVirtualH - kListTop - kListBottom) / kRowH;
-    const int end = std::min(static_cast<int>(entries_.size()), scroll_ + visible);
+    const int end = std::min(static_cast<int>(filtered_.size()), scroll_ + visible);
     for (int i = scroll_; i < end; ++i) {
         const int y = kListTop + (i - scroll_) * kRowH;
         const bool sel = (i == selected_);
@@ -260,18 +311,25 @@ void SongSelect::draw() const {
             DrawRectangle(20, y - 4, kListW - 20, kRowH - 6, Color{70, 55, 80, 255});
             DrawRectangle(20, y - 4, 6, kRowH - 6, GOLD);
         }
-        const std::string text = ellipsize(entries_[i].label, 24, kListW - 60);
+        const std::string text = ellipsize(entries_[filtered_[i]].label, 24, kListW - 60);
         DrawText(text.c_str(), 44, y, 24, sel ? RAYWHITE : Fade(RAYWHITE, 0.7f));
     }
 
-    DrawText(TextFormat("%d / %d", selected_ + 1, static_cast<int>(entries_.size())),
+    DrawText(TextFormat("%d / %d", selected_ + 1, static_cast<int>(filtered_.size())),
              40, 145, 20, GRAY);
+    if (searching_ || !query_.empty()) {  // 搜尋狀態列（計數器右側）
+        const std::string s = "Search: " + query_ + (searching_ ? "_" : "");
+        DrawText(s.c_str(), 260, 145, 20, searching_ ? GOLD : GRAY);
+    }
 
     // 右側詳情面板
     DrawLine(kListW + 20, kListTop - 10, kListW + 20, kVirtualH - kListBottom,
              Color{40, 40, 50, 255});
-    const Entry& e = entries_[selected_];
-    if (e.info) {
+    if (filtered_.empty()) {  // 有譜面但無符合結果
+        DrawText("沒有符合的譜面", 44, kListTop, 24, Fade(RAYWHITE, 0.6f));
+    }
+    const Entry& e = filtered_.empty() ? entries_[0] : entries_[filtered_[selected_]];
+    if (!filtered_.empty() && e.info) {
         const BeatmapInfo& bi = *e.info;
         int y = kListTop;
         const int panelW = kVirtualW - kPanelX - 30;
@@ -319,8 +377,9 @@ void SongSelect::draw() const {
     }
 
     const char* hint =
-        "UP/DOWN select   ENTER play   M auto   LEFT/RIGHT rate   "
-        "TAB settings   F11 fullscreen   ESC quit";
+        searching_ ? "type to search   BACKSPACE delete   ENTER play   ESC clear"
+                   : "UP/DOWN select   ENTER play   / search   M auto   LEFT/RIGHT rate   "
+                     "TAB settings   F11 fullscreen   ESC quit";
     DrawText(hint, w / 2 - MeasureText(hint, 22) / 2, kVirtualH - 55, 22,
              Fade(RAYWHITE, 0.6f));
 }

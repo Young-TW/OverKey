@@ -28,6 +28,13 @@ constexpr double kSkipLeadMs = 2000.0;             // 跳過前奏後落在第�
 constexpr double kMinIntroMs = 3000.0;             // 前奏長於此才可跳過
 constexpr double kFlashDur = 0.18;                 // 命中閃光秒數
 
+// ---- 命中誤差條（譜面右側垂直擺放，osu 風 hit error bar，上 = 早 / 下 = 晚）----
+constexpr double kErrWindowMs = 125.0;   // 最大判定視窗，對齊 core 的 kHitWindowMs
+constexpr int kErrBarHalfH = 260;        // 條的半高（px）：±125ms 映射到整段高度
+constexpr int kErrBarW = 10;             // 軌道寬（px）
+constexpr double kErrMarkFade = 2.0;     // 命中刻度的停留漸淡秒數
+constexpr std::size_t kMaxErrMarks = 24;  // 同時保留的命中刻度上限
+
 // 依鍵數產生音軌配色：奇數鍵的正中央為 GOLD，其餘藍/白交替
 Color noteColor(int col, int keyCount) {
     if (keyCount % 2 == 1 && col == keyCount / 2) return GOLD;
@@ -131,6 +138,7 @@ void Game::run(Viewport& vp) {
         session_ = PlaySession(map_.notes);
         phase_ = Phase::Playing;
         laneFlash_.fill(-10.0);
+        errMarks_.clear();  // 清空命中誤差條刻度
         liveCalcAt_ = -1.0e9;  // 讓 HUD 即時計數器下一幀立即重算
         clock = SongClock{kLeadInMs};
         clock.setRate(rate_);
@@ -222,6 +230,8 @@ void Game::run(Viewport& vp) {
             bool anyHit = false;
             for (const auto& ev : session_.drainEvents()) {
                 triggerFlash(ev.lane, ev.judgment);
+                errMarks_.push_back({ev.errMs, ev.judgment, GetTime()});
+                if (errMarks_.size() > kMaxErrMarks) errMarks_.pop_front();
                 anyHit = true;
             }
             if (anyHit) PlaySound(hitSound->get());
@@ -400,7 +410,78 @@ void Game::drawPlayfield(double songTimeMs) const {
                  static_cast<int>(kJudgeY) + 20, fs, Fade(RAYWHITE, 0.5f));
     }
 
+    drawErrorMeter();  // 右側垂直命中誤差條
+
     DrawFPS(kScreenW - 90, 10);
+}
+
+// osu 風垂直命中誤差條：中線為 0ms，上 = 早按、下 = 晚按。
+// 軌道以判定等級分段著色（中央 Perfect ±35ms，向外 Great/Good/Bad 各一圈），
+// 每次命中在對應誤差位置留下一道漸淡刻度，左側白短槓是近期可見命中的平均誤差。
+void Game::drawErrorMeter() const {
+    const int right = originX_ + playfieldW_;            // 譜面右緣
+    const int cx = right + (kScreenW - right) / 2;       // 右側留白區塊的中央
+    const int cy = kScreenH / 2;
+    const float pxPerMs = kErrBarHalfH / kErrWindowMs;
+    const int top = cy - kErrBarHalfH;
+    const int bot = cy + kErrBarHalfH;
+
+    // 底板與早/晚標籤
+    DrawRectangleRounded({static_cast<float>(cx - 16), static_cast<float>(top - 8), 32.0f,
+                          static_cast<float>(bot - top + 16)},
+                         0.4f, 6, Fade(BLACK, 0.4f));
+    DrawText("early", cx - MeasureText("early", 16) / 2, top - 26, 16, Fade(RAYWHITE, 0.5f));
+    DrawText("late", cx - MeasureText("late", 16) / 2, bot + 12, 16, Fade(RAYWHITE, 0.5f));
+
+    // 判定視窗分段：由中心向外 Perfect→Bad，上下兩側鏡像
+    struct Band {
+        double edgeMs;
+        Judgment j;
+    };
+    static constexpr Band kBands[] = {
+        {35.0, Judgment::Perfect},
+        {65.0, Judgment::Great},
+        {95.0, Judgment::Good},
+        {125.0, Judgment::Bad},
+    };
+    double prevEdge = 0.0;
+    for (const Band& b : kBands) {
+        const int yEdge = static_cast<int>(std::lround(b.edgeMs * pxPerMs));
+        const int yPrev = static_cast<int>(std::lround(prevEdge * pxPerMs));
+        const Color c = Fade(judgeColor(b.j), 0.30f);
+        DrawRectangle(cx - kErrBarW / 2, cy - yEdge, kErrBarW, yEdge - yPrev, c);  // 上（early）
+        DrawRectangle(cx - kErrBarW / 2, cy + yPrev, kErrBarW, yEdge - yPrev, c);  // 下（late）
+        // 分段邊界刻度
+        DrawRectangle(cx - kErrBarW / 2, cy - yEdge, kErrBarW, 1, Fade(RAYWHITE, 0.2f));
+        DrawRectangle(cx - kErrBarW / 2, cy + yEdge, kErrBarW, 1, Fade(RAYWHITE, 0.2f));
+        prevEdge = b.edgeMs;
+    }
+
+    // 0ms 中線
+    DrawRectangle(cx - kErrBarW / 2 - 4, cy - 1, kErrBarW + 8, 2, Fade(RAYWHITE, 0.9f));
+
+    // 命中刻度：依有號誤差定位，依判定著色，隨時間漸淡
+    const double now = GetTime();
+    double visSum = 0.0;
+    int visN = 0;
+    for (const ErrMark& m : errMarks_) {
+        const double dt = now - m.t;
+        if (dt < 0.0 || dt >= kErrMarkFade) continue;
+        const float a = static_cast<float>(1.0 - dt / kErrMarkFade);
+        const double e = std::clamp(m.errMs, -kErrWindowMs, kErrWindowMs);
+        const int y = cy + static_cast<int>(std::lround(e * pxPerMs));
+        DrawRectangle(cx - kErrBarW / 2 - 8, y - 2, kErrBarW + 16, 4,
+                      Fade(judgeColor(m.j), 0.9f * a));
+        visSum += m.errMs;
+        ++visN;
+    }
+
+    // 近期平均誤差指示（左側白短槓）
+    if (visN > 0) {
+        const double mean = std::clamp(visSum / visN, -kErrWindowMs, kErrWindowMs);
+        const int y = cy + static_cast<int>(std::lround(mean * pxPerMs));
+        DrawRectangle(cx - kErrBarW / 2 - 16, y - 1, 8, 2, Fade(RAYWHITE, 0.85f));
+    }
 }
 
 void Game::drawResult() const {

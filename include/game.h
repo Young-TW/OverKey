@@ -2,6 +2,7 @@
 #define GAME_H
 
 #include <array>
+#include <deque>
 #include <filesystem>
 
 #include "map.h"
@@ -35,6 +36,7 @@ private:
     void drawPlayfield(double songTimeMs) const;
     void drawResult() const;
     void drawPauseOverlay() const;
+    void drawErrorMeter() const;  // 右側垂直命中誤差條（osu 風）
     void triggerFlash(int lane, Judgment j);
 
     Beatmap map_;
@@ -68,6 +70,14 @@ private:
     // 命中回饋（用牆鐘計時，與遊戲邏輯時鐘分開）；上限 7 軌
     std::array<double, 7> laneFlash_{};
     std::array<Judgment, 7> laneFlashJudge_{};
+
+    // 命中誤差條（右側垂直）：最近命中的有號誤差與牆鐘時間戳，畫漸淡刻度用
+    struct ErrMark {
+        double errMs;  // >0 = 偏晚按
+        Judgment j;
+        double t;
+    };
+    std::deque<ErrMark> errMarks_;
 };
 
 #endif

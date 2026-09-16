@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <deque>
 #include <filesystem>
 #include <functional>
 #include <future>
@@ -68,6 +69,94 @@ Rgb judgeRgb(Judgment j) {
         case Judgment::Bad:     return {255, 161, 0};
         case Judgment::Miss:    return {230, 41, 55};
         default:                return kGray;
+    }
+}
+
+// 把顏色往背景色 18/24/30 縮淡（a=1 原色，a=0 背景）；命中閃光與誤差刻度共用公式
+Rgb fadeToBg(Rgb c, float a) {
+    return {static_cast<uint8_t>(18 + (c.r - 18) * a),
+            static_cast<uint8_t>(24 + (c.g - 24) * a),
+            static_cast<uint8_t>(30 + (c.b - 30) * a)};
+}
+
+// osu 風垂直命中誤差條（譜面右側，上 = 早 / 下 = 晚）：中線 0ms，
+// 判定視窗分段著色，每次命中留下漸淡刻度，左側白短槓為近期平均誤差。
+constexpr double kErrWindowMs = 125.0;    // 對齊 core 的 kHitWindowMs
+constexpr double kErrMarkFade = 2.0;      // 刻度停留漸淡秒數
+constexpr std::size_t kMaxErrMarks = 24;  // 同時保留的命中刻度上限
+
+struct ErrMark {
+    double errMs;  // >0 = 偏晚按
+    Judgment j;
+    Clock::time_point t;
+};
+
+void drawErrorMeter(PixelCanvas& canvas, const std::deque<ErrMark>& marks,
+                    Clock::time_point frameNow, int originCol, int playCells) {
+    const int cols = canvas.cols();
+    const int pxH = canvas.pxH();
+    const int margin = cols - (originCol + playCells);  // 右側留白格數
+    if (margin < 1) return;
+    const int barCx = originCol + playCells + margin / 2;
+    const bool wide = margin >= 4;  // 夠寬才有伸出刻度、平均槓與早/晚標籤
+    const int cy = pxH / 2;
+    const int halfH = pxH / 2 - 8;
+    if (halfH <= 8) return;  // 終端機太矮就不畫
+    const double pxPerMs = halfH / kErrWindowMs;
+
+    // 判定視窗分段：由中心向外 Perfect→Bad，上下鏡像
+    struct Band {
+        double edgeMs;
+        Judgment j;
+    };
+    static constexpr Band kBands[] = {
+        {35.0, Judgment::Perfect},
+        {65.0, Judgment::Great},
+        {95.0, Judgment::Good},
+        {125.0, Judgment::Bad},
+    };
+    double prevEdge = 0.0;
+    for (const Band& b : kBands) {
+        const int yEdge = (int)std::lround(b.edgeMs * pxPerMs);
+        const int yPrev = (int)std::lround(prevEdge * pxPerMs);
+        const Rgb c = fadeToBg(judgeRgb(b.j), 0.45f);  // 分段帶：淡色
+        canvas.fillRect(barCx, cy - yEdge, barCx, cy - yPrev - 1, c);   // 上（early）
+        canvas.fillRect(barCx, cy + yPrev + 1, barCx, cy + yEdge, c);   // 下（late）
+        // 分段邊界刻度
+        canvas.fillRect(barCx - (wide ? 1 : 0), cy - yEdge, barCx + (wide ? 1 : 0),
+                        cy - yEdge, kGray);
+        canvas.fillRect(barCx - (wide ? 1 : 0), cy + yEdge, barCx + (wide ? 1 : 0),
+                        cy + yEdge, kGray);
+        prevEdge = b.edgeMs;
+    }
+    // 0ms 中線
+    canvas.fillRect(barCx - (wide ? 1 : 0), cy, barCx + (wide ? 1 : 0), cy, kWhite);
+
+    // 命中刻度：依有號誤差定位，依判定著色，隨時間漸淡
+    double visSum = 0.0;
+    int visN = 0;
+    for (const ErrMark& m : marks) {
+        const double dt = std::chrono::duration<double>(frameNow - m.t).count();
+        if (dt < 0.0 || dt >= kErrMarkFade) continue;
+        const float a = static_cast<float>(1.0 - dt / kErrMarkFade);
+        const double e = std::clamp(m.errMs, -kErrWindowMs, kErrWindowMs);
+        const int y = cy + (int)std::lround(e * pxPerMs);
+        canvas.fillRect(barCx - (wide ? 1 : 0), y - 1, barCx + (wide ? 1 : 0), y,
+                        fadeToBg(judgeRgb(m.j), a));
+        visSum += m.errMs;
+        ++visN;
+    }
+    // 近期平均誤差（左側白短槓；不伸進軌道）
+    if (wide && visN > 0) {
+        const double mean = std::clamp(visSum / visN, -kErrWindowMs, kErrWindowMs);
+        const int y = cy + (int)std::lround(mean * pxPerMs);
+        const int dashCol = std::max(barCx - 3, originCol + playCells);
+        canvas.fillRect(dashCol, y, dashCol, y, kWhite);
+    }
+    // 早/晚標籤（5 格寬，barCx-2 起算）
+    if (wide) {
+        canvas.putText(barCx - 2, (cy - halfH) / 8 - 1, "early", kGray);
+        canvas.putText(barCx - 2, (cy + halfH) / 8 + 1, "late", kGray);
     }
 }
 
@@ -827,6 +916,7 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
     std::array<Clock::time_point, 7> flashAt{};  // 各軌道最近命中時間
     std::array<Judgment, 7> flashJ{};
     constexpr double kFlashDur = 0.18;
+    std::deque<ErrMark> errMarks;  // 右側垂直命中誤差條的最近命中刻度
 
     FpsMeter fps;
     double fAvg = 0, fLow1 = 0, fLow01 = 0;
@@ -861,6 +951,7 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
             StopMusicStream(music.get());
         }
         session = PlaySession(map.notes);
+        errMarks.clear();                  // 清空命中誤差條刻度
         liveCalcAt = Clock::time_point{};  // 讓 HUD 即時計數器下一幀立即重算
         clock = SongClock{kLeadInMs};
         clock.setRate(rate);
@@ -1031,6 +1122,8 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
             for (const auto& ev : session.drainEvents()) {
                 flashAt[ev.lane] = frameStart;  // 命中閃光
                 flashJ[ev.lane] = ev.judgment;
+                errMarks.push_back({ev.errMs, ev.judgment, frameStart});
+                if (errMarks.size() > kMaxErrMarks) errMarks.pop_front();
                 anyHit = true;
             }
             if (anyHit) PlaySound(hitSound);
@@ -1059,10 +1152,7 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
                     std::chrono::duration<double>(frameStart - flashAt[c]).count();
                 if (dt2 < 0.0 || dt2 >= kFlashDur) continue;
                 const float a = static_cast<float>(1.0 - dt2 / kFlashDur);
-                const Rgb base = judgeRgb(flashJ[c]);
-                const Rgb col{static_cast<uint8_t>(18 + (base.r - 18) * a),
-                              static_cast<uint8_t>(24 + (base.g - 24) * a),
-                              static_cast<uint8_t>(30 + (base.b - 30) * a)};
+                const Rgb col = fadeToBg(judgeRgb(flashJ[c]), a);
                 const int cx0 = originCol + c * laneCells;
                 canvas.fillRect(cx0, judgePxY - 10, cx0 + laneCells - 1, judgePxY - 2, col);
             }
@@ -1187,6 +1277,8 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
                 canvas.putText(originCol + c * laneCells + laneCells / 2, judgeRow + 1, k,
                                kGray);
             }
+            // 右側垂直命中誤差條
+            drawErrorMeter(canvas, errMarks, frameStart, originCol, playCells);
             // 暫停選單（疊在凍結畫面上）
             if (paused) {
                 const int cx = term.cols() / 2;

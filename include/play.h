@@ -54,6 +54,7 @@ public:
     struct HitEvent {
         int lane;
         Judgment judgment;  // 僅命中（非 Miss）才回報
+        double errMs;       // 有號誤差（>0 = 偏晚按），供前端畫誤差條；長押自動完成為 0
     };
 
     explicit PlaySession(std::vector<ManiaNote> notes);

@@ -83,11 +83,12 @@ void PlaySession::press(int lane, double songTimeMs) {
     }
     if (best < 0) return;
 
-    recordError(songTimeMs - notes_[best].startTime);  // >0 = 偏晚按
+    const double err = songTimeMs - notes_[best].startTime;
+    recordError(err);  // >0 = 偏晚按
 
     const Judgment headJ = judgeByError(bestAbs);
     addJudgment(headJ);
-    if (headJ != Judgment::Miss) events_.push_back({lane, headJ});
+    if (headJ != Judgment::Miss) events_.push_back({lane, headJ, err});
 
     if (notes_[best].endTime > 0) {
         state_[best] = NoteState::Holding;  // 長押：開始按住，尾部待判
@@ -112,7 +113,7 @@ void PlaySession::release(int lane, double songTimeMs) {
         recordError(err);
         const Judgment tailJ = judgeByError(std::abs(err));
         addJudgment(tailJ);
-        if (tailJ != Judgment::Miss) events_.push_back({lane, tailJ});
+        if (tailJ != Judgment::Miss) events_.push_back({lane, tailJ, err});
     }
 }
 
@@ -134,7 +135,7 @@ void PlaySession::advance(double songTimeMs) {
                     state_[i] = NoteState::Done;
                     holding_[n.column] = -1;
                     addJudgment(Judgment::Perfect);
-                    events_.push_back({n.column, Judgment::Perfect});
+                    events_.push_back({n.column, Judgment::Perfect, 0.0});
                 }
                 break;
             case NoteState::Done:

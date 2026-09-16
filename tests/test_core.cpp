@@ -160,6 +160,23 @@ void testJudgmentTiers() {
     CHECK(judgeTapAt(1000, 940) == Judgment::Great);      // 早按 60ms：對稱為 Great
 }
 
+// 命中事件攜帶的有號誤差（前端誤差條用）：>0 = 偏晚、<0 = 偏早
+void testHitEventError() {
+    std::printf("hit event signed error\n");
+    {
+        PlaySession s(std::vector<ManiaNote>{{0, 1000, -1}});
+        s.press(0, 1030);
+        const auto ev = s.drainEvents();
+        CHECK(ev.size() == 1 && ev[0].errMs == 30.0);   // 晚按 30ms
+    }
+    {
+        PlaySession s(std::vector<ManiaNote>{{0, 1000, -1}});
+        s.press(0, 970);
+        const auto ev = s.drainEvents();
+        CHECK(ev.size() == 1 && ev[0].errMs == -30.0);  // 早按 30ms
+    }
+}
+
 void testScoringAndMiss() {
     std::printf("scoring / miss / combo\n");
     PlaySession s(std::vector<ManiaNote>{{0, 1000, -1}, {1, 1000, -1}, {2, 1000, -1}});
@@ -358,6 +375,7 @@ int main() {
     testMapParsing();
     testQuaParsing();
     testJudgmentTiers();
+    testHitEventError();
     testScoringAndMiss();
     testLongNote();
     testSongClock();

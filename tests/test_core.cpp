@@ -6,6 +6,7 @@
 #include <fstream>
 #include <string>
 
+#include "library.h"
 #include "map.h"
 #include "play.h"
 #include "pp.h"
@@ -369,6 +370,104 @@ void testStrutil() {
     CHECK(s.empty());
 }
 
+void testLibrary() {
+    std::printf("library sort/group\n");
+
+    std::string l1 = "alpha song", l2 = "Beta song", l3 = "gamma song";
+    MapMetrics m1, m2, m3;
+
+    // Title：ASCII 不區分大小寫；desc 反轉
+    SortRow t1{&l1, &m1, nullptr}, t2{&l2, &m2, nullptr}, t3{&l3, &m3, nullptr};
+    CHECK(sortRowLess(SortKey::Title, true, t1, t2));
+    CHECK(sortRowLess(SortKey::Title, true, t2, t3));  // B < g（折疊大小寫）
+    CHECK(!sortRowLess(SortKey::Title, true, t3, t2));
+    CHECK(sortRowLess(SortKey::Title, false, t3, t1));  // desc 反轉
+    CHECK(groupName(SortKey::Title, t1) == "A");
+    CHECK(groupName(SortKey::Title, t2) == "B");
+    std::string lCjk = "中文字";
+    SortRow tCjk{&lCjk, &m1, nullptr};
+    CHECK(groupName(SortKey::Title, tCjk) == "#");
+
+    // Grade：等第佳者前、同等第 acc 高者前、無紀錄墊底（desc 仍墊底）
+    ScoreRecord sSS{100, 99.5, "SS", 1, true};
+    ScoreRecord sSa{90, 96.0, "S", 1, true};
+    ScoreRecord sSb{80, 95.5, "S", 1, true};
+    ScoreRecord sD{10, 60.0, "D", 1, true};
+    ScoreRecord sNone;
+    CHECK(gradeRank(&sSS) == 6);
+    CHECK(gradeRank(&sD) == 1);
+    CHECK(gradeRank(&sNone) == 0);
+    CHECK(gradeRank(nullptr) == 0);
+    SortRow gSS{&l1, &m1, &sSS}, gSa{&l2, &m2, &sSa}, gSb{&l3, &m3, &sSb};
+    SortRow gD{&l2, &m2, &sD}, gNo{&l3, &m3, &sNone};
+    CHECK(sortRowLess(SortKey::Grade, true, gSS, gSa));
+    CHECK(sortRowLess(SortKey::Grade, true, gSa, gSb));  // 同 S、acc 高者在前
+    CHECK(sortRowLess(SortKey::Grade, true, gD, gNo));   // 有紀錄在無紀錄前
+    CHECK(sortRowLess(SortKey::Grade, false, gD, gNo));  // desc 反轉但無紀錄仍墊底
+    CHECK(groupName(SortKey::Grade, gSS) == "SS");
+    CHECK(groupName(SortKey::Grade, gNo) == "UNPLAYED");
+
+    // Difficulty：星級低者前（asc）；未評級墊底（desc 也一樣）
+    MapMetrics d1, d2, d0;
+    d1.osuStar = 2.5;
+    d1.quaverDiff = 5.0;
+    d2.osuStar = 6.0;
+    d2.quaverDiff = 15.0;
+    SortRow r1{&l1, &d1, nullptr}, r2{&l2, &d2, nullptr}, r0{&l3, &d0, nullptr};
+    CHECK(sortRowLess(SortKey::Difficulty, true, r1, r2));
+    CHECK(sortRowLess(SortKey::Difficulty, false, r2, r1));
+    CHECK(sortRowLess(SortKey::Difficulty, false, r2, r0));
+    CHECK(!sortRowLess(SortKey::Difficulty, false, r0, r2));
+    CHECK(groupName(SortKey::Difficulty, r1) == "2 - 4 ★");
+    CHECK(groupName(SortKey::Difficulty, r2) == "6 - 8 ★");
+    CHECK(groupName(SortKey::Difficulty, r0) == "UNRATED");
+
+    // Length / Notes：需 BeatmapInfo；缺資料墊底
+    MapMetrics i1, i2;
+    BeatmapInfo bi1, bi2;
+    bi1.lengthMs = 45'000;
+    bi1.noteCount = 300;
+    bi2.lengthMs = 200'000;
+    bi2.noteCount = 2500;
+    i1.info = bi1;
+    i2.info = bi2;
+    SortRow len1{&l1, &i1, nullptr}, len2{&l2, &i2, nullptr}, len0{&l3, &m3, nullptr};
+    CHECK(sortRowLess(SortKey::Length, true, len1, len2));
+    CHECK(sortRowLess(SortKey::Length, true, len2, len0));  // 缺 info 墊底
+    CHECK(groupName(SortKey::Length, len1) == "0:00 - 0:59");
+    CHECK(groupName(SortKey::Length, len2) == "3:00 - 4:59");
+    CHECK(sortRowLess(SortKey::Notes, true, len1, len2));
+    CHECK(groupName(SortKey::Notes, len1) == "0 - 499");
+    CHECK(groupName(SortKey::Notes, len2) == "2000 - 3999");
+    CHECK(groupName(SortKey::Notes, len0) == "UNKNOWN");
+
+    // loadMetrics 實際載入：info-only 不算難度；withDiff 補上（且資訊不會重載遺失）
+    std::string ho;
+    ho += std::to_string(colX(0, 7)) + ",192,1000,1,0,0:0:0:0:\n";
+    ho += std::to_string(colX(3, 7)) + ",192,1400,128,0,1800:0:0:0:0:\n";
+    const fs::path p = writeOsu("lib.osu", 3, 7, -1, ho);
+    MapMetrics m;
+    loadMetrics(p, m, /*withDiff=*/false);
+    CHECK(m.info.has_value());
+    CHECK(!m.quaverDiff.has_value());
+    CHECK(m.info->noteCount == 2);
+    loadMetrics(p, m, /*withDiff=*/true);
+    CHECK(m.info.has_value());
+    CHECK(m.quaverDiff.has_value());
+    CHECK(m.osuStar.has_value());
+    CHECK(sortNeedsInfo(SortKey::Length));
+    CHECK(sortNeedsInfo(SortKey::Notes));
+    CHECK(!sortNeedsInfo(SortKey::Grade));
+    CHECK(sortNeedsDiff(SortKey::Difficulty));
+    CHECK(!sortNeedsDiff(SortKey::Title));
+
+    // 介面完整性
+    CHECK(std::string(sortKeyName(SortKey::Title)) == "TITLE");
+    SortKey k = SortKey::Title;
+    for (int i = 0; i < 5; ++i) k = nextSortKey(k);
+    CHECK(k == SortKey::Title);
+}
+
 }  // namespace
 
 int main() {
@@ -383,6 +482,7 @@ int main() {
     testLiveRatings();
     testScores();
     testStrutil();
+    testLibrary();
 
     std::error_code ec;
     fs::remove_all(fs::temp_directory_path() / "overkey_test", ec);

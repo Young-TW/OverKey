@@ -1,12 +1,13 @@
 #include <algorithm>
 #include <cmath>
+#include <numeric>
 #include <optional>
 #include <string>
 #include <system_error>
 #include <utility>
 
 #include <raylib.h>
-#include "pp.h"
+#include "library.h"
 #include "map.h"
 
 #include "raii.h"
@@ -17,6 +18,7 @@
 namespace {
 constexpr double kPreviewDebounce = 0.25;  // hover 後延遲多久才載入試聽，避免快速捲動狂載
 constexpr int kRowH = 46;
+constexpr int kHeaderH = 34;               // 群組標頭列高
 constexpr int kListTop = 170;
 constexpr int kListBottom = 80;  // 底部保留給提示
 constexpr int kListW = 520;      // 左側清單寬度，右側為詳情面板
@@ -42,11 +44,11 @@ SongSelect::SongSelect(std::filesystem::path mapsDir)
             if (makeEntry(it->path(), e)) entries_.push_back(std::move(e));
         }
     }
-    std::sort(entries_.begin(), entries_.end(),
-              [](const Entry& a, const Entry& b) { return a.label < b.label; });
-    refilter({});  // 空 query → 全清單
+    rebuildView({});  // 空 query → 全清單
     importer_.start();  // 開背景執行緒掃描/解壓 .osz/.qp，執行期間增量餵進清單
 }
+
+SongSelect::~SongSelect() { stopMetricLoad(); }
 
 bool SongSelect::makeEntry(const std::filesystem::path& p, Entry& out) const {
     if (p.extension() != ".osu" && p.extension() != ".qua") return false;
@@ -55,7 +57,7 @@ bool SongSelect::makeEntry(const std::filesystem::path& p, Entry& out) const {
     // 優先用譜面標題，缺 metadata 時退回相對路徑
     std::string label = h.label();
     if (label.empty()) label = p.lexically_relative(mapsDir_).replace_extension("").string();
-    out = Entry{p, std::move(label), std::nullopt};
+    out = Entry{p, std::move(label), {}};
     return true;
 }
 
@@ -73,40 +75,157 @@ void SongSelect::ingestNewMaps() {
         Entry e;
         if (makeEntry(p, e)) entries_.push_back(std::move(e));
     }
-    std::sort(entries_.begin(), entries_.end(),
-              [](const Entry& a, const Entry& b) { return a.label < b.label; });
-    refilter(selPath);  // 依現有 query 重建篩選並還原選取
+    metricTotal_ = 0;  // 新譜面缺指標 → 允許背景計算開新一輪
+    rebuildView(selPath);  // 依現有排序 + query 重建並還原選取
 }
 
-void SongSelect::refilter(const std::filesystem::path& preserve) {
-    filtered_.clear();
-    for (int i = 0; i < static_cast<int>(entries_.size()); ++i)
-        if (query_.empty() || strutil::icontains(entries_[i].label, query_))
-            filtered_.push_back(i);
-    selected_ = 0;
+void SongSelect::rebuildView(const std::filesystem::path& preserve) {
+    // 等第排序／分組需要成績；預先整批查出（查表 log n，只在 Grade 鍵時做）
+    std::vector<ScoreRecord> bests;
+    if (sortKey_ == SortKey::Grade && scores_) {
+        bests.resize(entries_.size());
+        for (int i = 0; i < static_cast<int>(entries_.size()); ++i)
+            bests[i] = scores_->best(entries_[i].path.string());
+    }
+    auto rowOf = [&](int i) {
+        return SortRow{&entries_[i].label, &entries_[i].metrics,
+                       bests.empty() ? nullptr : &bests[i]};
+    };
+
+    // 1) 依排序鍵排全部譜面（索引排序；entries_ 本身順序不動）
+    std::vector<int> order(entries_.size());
+    std::iota(order.begin(), order.end(), 0);
+    std::sort(order.begin(), order.end(), [&](int a, int b) {
+        return sortRowLess(sortKey_, sortAsc_, rowOf(a), rowOf(b));
+    });
+
+    // 2) 套用 query 篩選並插入群組標頭（搜尋中不插標頭，維持平清單）
+    rows_.clear();
+    itemCount_ = 0;
+    std::string lastGroup;
+    for (const int idx : order) {
+        if (!query_.empty() && !strutil::icontains(entries_[idx].label, query_)) continue;
+        if (query_.empty()) {
+            const std::string g = groupName(sortKey_, rowOf(idx));
+            if (g != lastGroup) {
+                rows_.push_back(Row{-1, g, 0});
+                lastGroup = g;
+            }
+        }
+        rows_.push_back(Row{idx, {}, itemCount_++});
+    }
+
+    // 3) 還原選取（優先 preserve 路徑，否則第一個項目列）
+    selected_ = -1;
     if (!preserve.empty()) {
-        for (int v = 0; v < static_cast<int>(filtered_.size()); ++v)
-            if (entries_[filtered_[v]].path == preserve) {
+        for (int v = 0; v < static_cast<int>(rows_.size()); ++v) {
+            if (!rows_[v].isHeader() && entries_[rows_[v].entry].path == preserve) {
                 selected_ = v;
                 break;
             }
+        }
     }
+    if (selected_ < 0) {
+        for (int v = 0; v < static_cast<int>(rows_.size()); ++v) {
+            if (!rows_[v].isHeader()) {
+                selected_ = v;
+                break;
+            }
+        }
+    }
+    if (selected_ < 0) selected_ = 0;  // 完全無項目（搜尋無結果）
     scroll_ = 0;
     clampScroll();
 }
 
 std::filesystem::path SongSelect::selectedPath() const {
-    if (filtered_.empty()) return {};
-    return entries_[filtered_[selected_]].path;
+    if (rows_.empty()) return {};
+    const Row& r = rows_[std::clamp(selected_, 0, static_cast<int>(rows_.size()) - 1)];
+    return r.isHeader() ? std::filesystem::path{} : entries_[r.entry].path;
+}
+
+void SongSelect::stepSelection(int dir) {
+    if (rows_.empty()) return;
+    const int n = static_cast<int>(rows_.size());
+    for (int step = 0; step < n; ++step) {
+        selected_ = (selected_ + dir + n) % n;
+        if (!rows_[selected_].isHeader()) return;  // 跳到項目列為止
+    }
 }
 
 void SongSelect::clampScroll() {
-    if (filtered_.empty()) return;
-    selected_ = std::clamp(selected_, 0, static_cast<int>(filtered_.size()) - 1);
+    if (rows_.empty()) return;
+    selected_ = std::clamp(selected_, 0, static_cast<int>(rows_.size()) - 1);
+    if (rows_[selected_].isHeader()) stepSelection(1);  // 保證停在項目列
     const int visible = (kVirtualH - kListTop - kListBottom) / kRowH;
     if (selected_ < scroll_) scroll_ = selected_;
     if (selected_ >= scroll_ + visible) scroll_ = selected_ - visible + 1;
     scroll_ = std::max(0, scroll_);
+}
+
+void SongSelect::startMetricLoad() {
+    // 收集缺指標的譜面（難度排序也要一併載入摘要）
+    const bool needDiff = sortNeedsDiff(sortKey_);
+    const bool needInfo = sortNeedsInfo(sortKey_) || needDiff;
+    std::vector<std::pair<std::filesystem::path, bool>> todo;
+    if (needInfo) {
+        for (const Entry& e : entries_) {
+            const bool d = needDiff && !e.metrics.quaverDiff;
+            const bool i = d || !e.metrics.info;
+            if (i) todo.emplace_back(e.path, d);
+        }
+    }
+    if (todo.empty()) return;  // 全數快取齊全 → 不用開工
+
+    stopMetricLoad();
+    metricTotal_ = static_cast<int>(todo.size());
+    metricProgress_ = 0;
+    metricCancel_ = false;
+    metricRunning_ = true;
+    metricWorker_ = std::thread([this, todo = std::move(todo)] {
+        for (const auto& [path, withDiff] : todo) {
+            if (metricCancel_) break;
+            MapMetrics m;
+            loadMetrics(path, m, withDiff);
+            {
+                std::lock_guard<std::mutex> lk(metricM_);
+                metricDone_.emplace_back(path, std::move(m));
+            }
+            ++metricProgress_;
+        }
+        metricRunning_ = false;
+    });
+}
+
+void SongSelect::stopMetricLoad() {
+    if (metricWorker_.joinable()) {
+        metricCancel_ = true;
+        metricWorker_.join();
+    }
+    metricRunning_ = false;
+    drainMetricResults();
+    metricTotal_ = 0;
+    metricProgress_ = 0;
+}
+
+bool SongSelect::drainMetricResults() {
+    std::deque<std::pair<std::filesystem::path, MapMetrics>> done;
+    {
+        std::lock_guard<std::mutex> lk(metricM_);
+        done.swap(metricDone_);
+    }
+    if (done.empty()) return false;
+    for (auto& [path, m] : done) {
+        const auto it = std::find_if(entries_.begin(), entries_.end(),
+                                     [&](const Entry& e) { return e.path == path; });
+        if (it == entries_.end()) continue;
+        if (!it->metrics.info && m.info) it->metrics.info = m.info;
+        if (!it->metrics.quaverDiff && m.quaverDiff) {
+            it->metrics.quaverDiff = m.quaverDiff;
+            it->metrics.osuStar = m.osuStar;
+        }
+    }
+    return true;
 }
 
 MenuResult SongSelect::run(Viewport& vp, float musicVolume, const ScoreBook& scores,
@@ -126,46 +245,57 @@ MenuResult SongSelect::run(Viewport& vp, float musicVolume, const ScoreBook& sco
     std::filesystem::path coverPath;        // 已載入的封面檔（空＝無）
     int lastSel = selected_;
 
-    // 每次回選單重置搜尋狀態，並重建篩選視圖
+    // 每次回選單重置搜尋狀態，並重建（成績可能已更新 → 反映到等第排序/分組）
     query_.clear();
     searching_ = false;
-    refilter({});
+    rebuildView({});
 
     while (!WindowShouldClose()) {
         ingestNewMaps();  // 背景解壓的新譜面即時進清單
         syncMods();
         if (IsKeyPressed(KEY_F11)) ToggleBorderlessWindowed();
 
+        // 背景指標計算：序列到貨就併入並重排；全齊後視需要開新一輪
+        if (drainMetricResults()) rebuildView(selectedPath());
+        if ((sortNeedsInfo(sortKey_) || sortNeedsDiff(sortKey_)) && !metricRunning_ &&
+            metricTotal_ == 0)
+            startMetricLoad();
+
         // 文字輸入：搜尋模式吃進 query，否則丟棄（避免佇列積壓進入搜尋時噴出）
         for (int ch = GetCharPressed(); ch > 0; ch = GetCharPressed()) {
             if (!searching_ || ch < 32) continue;
             const std::filesystem::path keep = selectedPath();
             strutil::appendUtf8(query_, static_cast<uint32_t>(ch));
-            refilter(keep);
+            rebuildView(keep);
         }
         if (searching_ && IsKeyPressed(KEY_BACKSPACE) && !query_.empty()) {
             const std::filesystem::path keep = selectedPath();
             strutil::popUtf8(query_);
-            refilter(keep);
+            rebuildView(keep);
         }
         if (!searching_ && (IsKeyPressed(KEY_SLASH) || IsKeyPressed(KEY_KP_DIVIDE)))
             searching_ = true;
 
-        if (!filtered_.empty()) {
-            if (IsKeyPressed(KEY_DOWN)) ++selected_;
-            if (IsKeyPressed(KEY_UP)) --selected_;
-            selected_ -= GetMouseWheelMove() > 0 ? 1 : (GetMouseWheelMove() < 0 ? -1 : 0);
-            selected_ = (selected_ + static_cast<int>(filtered_.size())) %
-                        static_cast<int>(filtered_.size());
-            clampScroll();
+        if (!rows_.empty()) {
+            int dir = 0;
+            if (IsKeyPressed(KEY_DOWN)) ++dir;
+            if (IsKeyPressed(KEY_UP)) --dir;
+            const float wheel = GetMouseWheelMove();
+            if (wheel > 0) --dir;
+            if (wheel < 0) ++dir;
+            if (dir) {
+                stepSelection(dir > 0 ? 1 : -1);
+                clampScroll();
+            }
             ensureSelectedInfo();
             if (selected_ != lastSel) {  // 換選取：重啟防抖（先不停試聽）
                 lastSel = selected_;
                 selChangedAt = GetTime();
             }
 
-            if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER)) {
-                return {MenuAction::Play, entries_[filtered_[selected_]].path};
+            if ((IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER)) &&
+                !rows_[selected_].isHeader()) {
+                return {MenuAction::Play, entries_[rows_[selected_].entry].path};
             }
         }
         if (IsKeyPressed(KEY_TAB)) return {MenuAction::Settings, {}};
@@ -173,6 +303,15 @@ MenuResult SongSelect::run(Viewport& vp, float musicVolume, const ScoreBook& sco
             if (IsKeyPressed(KEY_M)) autoPlay = !autoPlay;  // 切換 auto-play
             if (IsKeyPressed(KEY_LEFT)) rate = std::max(0.5f, std::round((rate - 0.05f) / 0.05f) * 0.05f);
             if (IsKeyPressed(KEY_RIGHT)) rate = std::min(2.0f, std::round((rate + 0.05f) / 0.05f) * 0.05f);
+            if (IsKeyPressed(KEY_S)) {  // S 換排序鍵；Shift+S 反轉方向
+                if (IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT)) {
+                    sortAsc_ = !sortAsc_;
+                } else {
+                    sortKey_ = nextSortKey(sortKey_);
+                    stopMetricLoad();  // 換鍵 → 以新需求重開背景計算
+                }
+                rebuildView(selectedPath());
+            }
         }
         if (IsKeyPressed(KEY_ESCAPE)) {
             if (searching_) {  // 先清搜尋，再按一次才離開
@@ -180,7 +319,7 @@ MenuResult SongSelect::run(Viewport& vp, float musicVolume, const ScoreBook& sco
                 searching_ = false;
                 if (!query_.empty()) {
                     query_.clear();
-                    refilter(keep);
+                    rebuildView(keep);
                 }
             } else {
                 return {MenuAction::Quit, {}};
@@ -189,11 +328,12 @@ MenuResult SongSelect::run(Viewport& vp, float musicVolume, const ScoreBook& sco
 
         // 副歌試聽：停穩超過防抖時間後，只有「音訊檔不同」才重載
         //（同一首歌切不同難度→音訊檔相同→續播不重啟）
-        if (!filtered_.empty() && GetTime() - selChangedAt > kPreviewDebounce) {
-            const Entry& e = entries_[filtered_[selected_]];
+        if (!rows_.empty() && !rows_[selected_].isHeader() &&
+            GetTime() - selChangedAt > kPreviewDebounce) {
+            const Entry& e = entries_[rows_[selected_].entry];
             std::filesystem::path desired;
-            if (e.info && !e.info->audioFilename.empty())
-                desired = e.path.parent_path() / e.info->audioFilename;
+            if (e.metrics.info && !e.metrics.info->audioFilename.empty())
+                desired = e.path.parent_path() / e.metrics.info->audioFilename;
             if (desired != previewPath) {
                 preview.reset();
                 previewPath = desired;
@@ -202,8 +342,8 @@ MenuResult SongSelect::run(Viewport& vp, float musicVolume, const ScoreBook& sco
                     if (preview->valid()) {
                         SetMusicVolume(preview->get(), musicVolume);
                         PlayMusicStream(preview->get());
-                        previewStart = e.info->previewTimeMs >= 0
-                                           ? e.info->previewTimeMs / 1000.0
+                        previewStart = e.metrics.info->previewTimeMs >= 0
+                                           ? e.metrics.info->previewTimeMs / 1000.0
                                            : GetMusicTimeLength(preview->get()) * 0.4;
                         SeekMusicStream(preview->get(), static_cast<float>(previewStart));
                     } else {
@@ -222,11 +362,12 @@ MenuResult SongSelect::run(Viewport& vp, float musicVolume, const ScoreBook& sco
         }
 
         // 封面圖：停穩後只有「檔案不同」才重載
-        if (!filtered_.empty() && GetTime() - selChangedAt > kPreviewDebounce) {
-            const Entry& e = entries_[filtered_[selected_]];
+        if (!rows_.empty() && !rows_[selected_].isHeader() &&
+            GetTime() - selChangedAt > kPreviewDebounce) {
+            const Entry& e = entries_[rows_[selected_].entry];
             std::filesystem::path desired;
-            if (e.info && !e.info->backgroundFilename.empty())
-                desired = e.path.parent_path() / e.info->backgroundFilename;
+            if (e.metrics.info && !e.metrics.info->backgroundFilename.empty())
+                desired = e.path.parent_path() / e.metrics.info->backgroundFilename;
             if (desired != coverPath) {
                 cover.reset();
                 coverPath = desired;
@@ -260,14 +401,11 @@ MenuResult SongSelect::run(Viewport& vp, float musicVolume, const ScoreBook& sco
 }
 
 void SongSelect::ensureSelectedInfo() {
-    if (filtered_.empty()) return;
-    Entry& e = entries_[filtered_[selected_]];
-    if (!e.info) e.info = loadBeatmapInfo(e.path);
-    if (e.info && !e.quaverDiff) {
-        const Beatmap bm = loadBeatmap(e.path);
-        e.quaverDiff = quaverDifficulty(bm.notes, bm.keyCount, 1.0f);
-        e.osuStar = osuEstimateStarRating(*e.quaverDiff);
-    }
+    if (rows_.empty()) return;
+    const Row& r = rows_[selected_];
+    if (r.isHeader()) return;
+    Entry& e = entries_[r.entry];
+    if (!e.metrics.info || !e.metrics.quaverDiff) loadMetrics(e.path, e.metrics, true);
 }
 
 void SongSelect::draw() const {
@@ -301,36 +439,53 @@ void SongSelect::draw() const {
         return;
     }
 
-    // 左側清單（只畫符合 query_ 的項）
+    // 左側清單（標頭列 + 項目列混排；項目列高才佔滿 kRowH）
     const int visible = (kVirtualH - kListTop - kListBottom) / kRowH;
-    const int end = std::min(static_cast<int>(filtered_.size()), scroll_ + visible);
+    const int end = std::min(static_cast<int>(rows_.size()), scroll_ + visible);
     for (int i = scroll_; i < end; ++i) {
+        const Row& row = rows_[i];
         const int y = kListTop + (i - scroll_) * kRowH;
+        if (row.isHeader()) {  // 群組標頭：細字 + 分隔線
+            DrawText(row.header.c_str(), 44, y + (kRowH - kHeaderH) / 2, 18, GOLD);
+            const int tx = 44 + MeasureText(row.header.c_str(), 18) + 12;
+            DrawLine(tx, y + kRowH / 2 - 1, kListW - 20, y + kRowH / 2 - 1,
+                     Color{70, 55, 80, 255});
+            continue;
+        }
         const bool sel = (i == selected_);
         if (sel) {
             DrawRectangle(20, y - 4, kListW - 20, kRowH - 6, Color{70, 55, 80, 255});
             DrawRectangle(20, y - 4, 6, kRowH - 6, GOLD);
         }
-        const std::string text = ellipsize(entries_[filtered_[i]].label, 24, kListW - 60);
+        const std::string text = ellipsize(entries_[row.entry].label, 24, kListW - 60);
         DrawText(text.c_str(), 44, y, 24, sel ? RAYWHITE : Fade(RAYWHITE, 0.7f));
     }
 
-    DrawText(TextFormat("%d / %d", selected_ + 1, static_cast<int>(filtered_.size())),
-             40, 145, 20, GRAY);
+    // 計數器 + 排序狀態列
+    if (itemCount_ > 0 && !rows_.empty() && !rows_[selected_].isHeader())
+        DrawText(TextFormat("%d / %d", rows_[selected_].itemPos + 1, itemCount_), 40, 145,
+                 20, GRAY);
+    {
+        const std::string s =
+            std::string(sortKeyName(sortKey_)) + (sortAsc_ ? " ASC" : " DESC");
+        DrawText(s.c_str(), 190, 145, 20, GOLD);
+    }
     if (searching_ || !query_.empty()) {  // 搜尋狀態列（計數器右側）
         const std::string s = "Search: " + query_ + (searching_ ? "_" : "");
-        DrawText(s.c_str(), 260, 145, 20, searching_ ? GOLD : GRAY);
+        DrawText(s.c_str(), 420, 145, 20, searching_ ? GOLD : GRAY);
     }
 
     // 右側詳情面板
     DrawLine(kListW + 20, kListTop - 10, kListW + 20, kVirtualH - kListBottom,
              Color{40, 40, 50, 255});
-    if (filtered_.empty()) {  // 有譜面但無符合結果
+    if (rows_.empty()) {  // 有譜面但無符合結果
         DrawText("沒有符合的譜面", 44, kListTop, 24, Fade(RAYWHITE, 0.6f));
     }
-    const Entry& e = filtered_.empty() ? entries_[0] : entries_[filtered_[selected_]];
-    if (!filtered_.empty() && e.info) {
-        const BeatmapInfo& bi = *e.info;
+    // 選取維持在項目列上；rows_ 空時 entries_ 必非空（draw 前段已攔截空清單）
+    const Entry& e =
+        rows_.empty() ? entries_[0] : entries_[std::max(0, rows_[selected_].entry)];
+    if (!rows_.empty() && !rows_[selected_].isHeader() && e.metrics.info) {
+        const BeatmapInfo& bi = *e.metrics.info;
         int y = kListTop;
         const int panelW = kVirtualW - kPanelX - 30;
         auto field = [&](const char* label, const std::string& value, int size, Color c) {
@@ -343,10 +498,12 @@ void SongSelect::draw() const {
         field("TITLE", bi.title.empty() ? e.label : bi.title, 26, RAYWHITE);
         field("ARTIST", bi.artist, 22, Fade(RAYWHITE, 0.85f));
         field("DIFFICULTY", bi.version, 22, GOLD);
-        if (e.quaverDiff && e.osuStar) {
-            DrawText(TextFormat("QUAVER DIFF %.2f", *e.quaverDiff), kPanelX, y, 22, RAYWHITE);
+        if (e.metrics.quaverDiff && e.metrics.osuStar) {
+            DrawText(TextFormat("QUAVER DIFF %.2f", *e.metrics.quaverDiff), kPanelX, y, 22,
+                     RAYWHITE);
             y += 30;
-            DrawText(TextFormat("OSU STAR %.2f★", *e.osuStar), kPanelX, y, 22, RAYWHITE);
+            DrawText(TextFormat("OSU STAR %.2f★", *e.metrics.osuStar), kPanelX, y, 22,
+                     RAYWHITE);
             y += 30;
         }
 
@@ -376,10 +533,15 @@ void SongSelect::draw() const {
         }
     }
 
+    // 背景指標計算進度（左下角）
+    if (metricRunning_ && metricTotal_ > 0)
+        DrawText(TextFormat("analyzing %d/%d", metricProgress_.load(), metricTotal_), 40,
+                 kVirtualH - 78, 18, GOLD);
+
     const char* hint =
         searching_ ? "type to search   BACKSPACE delete   ENTER play   ESC clear"
-                   : "UP/DOWN select   ENTER play   / search   M auto   LEFT/RIGHT rate   "
-                     "TAB settings   F11 fullscreen   ESC quit";
+                   : "UP/DOWN select   ENTER play   / search   S sort (Shift+S order)   M auto   "
+                     "LEFT/RIGHT rate   TAB settings   F11 fullscreen   ESC quit";
     DrawText(hint, w / 2 - MeasureText(hint, 22) / 2, kVirtualH - 55, 22,
              Fade(RAYWHITE, 0.6f));
 }

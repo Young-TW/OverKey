@@ -31,6 +31,11 @@ logic core**: a graphical version (raylib) and a terminal version (TUI). Support
   drift anchor — no judder from the quantized audio position).
 - **Song select** with metadata panel and **chorus preview** on hover (osu `PreviewTime`),
   plus **live search** (press `/`, type to filter artist/title/difficulty, `Esc` clears).
+- **Sortable / grouped song list**: press `S` to cycle sort keys — title, difficulty
+  (Quaver/osu★), best grade, length, note count — and `Shift+S` to flip the direction.
+  The list is grouped with headers (`SS`/`S`/`A`…`UNPLAYED`, `0 - 2 ★`/`2 - 4 ★`…, `A`–`Z`,
+  time and note buckets); metrics are computed in a background thread with a progress
+  indicator.
 - **Settings** (persisted to `overkey.cfg`, shared by both frontends): audio offset,
   scroll speed, music/effect volume, per-lane keybinds for 4K and 7K.
 - **Result screen**: grade, accuracy, per-tier counts, timing-error histogram, and a
@@ -154,6 +159,7 @@ If your npm blocks install scripts and `require("realm")` fails afterwards, run
 | Settings (from menu) | `Tab` | `Tab` |
 | Fullscreen toggle (GUI) | `F11` | — |
 | Search maps (in menu) | `/`, Esc clears | `/`, Esc clears |
+| Sort/group songs | `S` key, `Shift+S` order | `s` key, `S` order |
 | Menu navigate | `↑ ↓`, Enter, Esc | `↑↓` or `j k`, Enter, `q` |
 
 The **TUI requires a terminal that supports the Kitty keyboard protocol** (kitty,
@@ -170,6 +176,7 @@ offset. Set it under `Tab → Audio offset` so judgment lines up with the music.
 ```
 include/play.h, src/play.cpp     core: PlaySession, SongClock, Judgment (no raylib)
 include/map.h,  src/map.cpp       .osu parsing: loadBeatmap / loadBeatmapInfo / probeBeatmap
+include/library.h, src/library.cpp  song-list sort keys, group buckets, metric loading
 include/map_import.h, src/map_import.cpp  background .osz/.qp unpacker (MapImporter, miniz)
 include/settings.*                Settings struct + load/save + GUI settings screen
 include/game.h, src/game.cpp      GUI frontend over PlaySession

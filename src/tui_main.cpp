@@ -16,6 +16,7 @@
 
 #include "rl_compat.h"  // raylib 音訊/影像子集（miniaudio + stb），免 OpenGL/X11
 
+#include "library.h"
 #include "map.h"
 #include "map_import.h"
 #include "play.h"
@@ -233,6 +234,13 @@ Sound makeHitSound() {
 struct Entry {
     fs::path path;
     std::string label;
+    MapMetrics metrics;  // 延遲載入排序指標（摘要／難度），背景執行緒補齊
+};
+
+// 顯示列：一般項目（entry 為 entries 索引）或群組標頭（entry = -1）
+struct MenuRow {
+    int entry;
+    std::string header;
 };
 
 // 探測單一譜面檔；支援（mania 4K/7K）則填入 out 回傳 true。
@@ -531,10 +539,11 @@ struct MenuInfo {
     double osuStar = 0.0;
 };
 
-// 回傳 kMenuQuit=離開、kMenuSettings=設定，否則為選擇的 index
+// 回傳 kMenuQuit=離開、kMenuSettings=設定，否則為選擇的 index；
+// sortKey/sortAsc 由呼叫端持有，跨場次保留排序/分組狀態
 int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float musicVolume,
             float rate, bool autoPlay, const ScoreBook& scores, MapImporter& importer,
-            const fs::path& mapsDir) {
+            const fs::path& mapsDir, SortKey& sortKey, bool& sortAsc) {
     PixelCanvas canvas(term.cols(), term.rows());
     std::string out;
     Loader loader;  // 常駐背景載入執行緒
@@ -563,17 +572,45 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
     const int coverCol = term.cols() / 2 + 2;  // 面板起始欄（1-based）
     const int coverRow = 4;                     // 面板起始列（1-based）
 
-    // 搜尋（/ 進入、Esc 清除）：query 為即時子字串篩選；filtered 存 entries 索引
+    // 搜尋（/ 進入、Esc 清除）：query 為即時子字串篩選；filtered 存 entries 索引（顯示順序）
     std::string query;
     bool searching = false;
     std::vector<int> filtered;
+    std::vector<MenuRow> rows;  // 項目 + 群組標頭混排的顯示列（捲動以列為單位）
     bool filterDirty = true;
     std::size_t lastCount = 0;
     auto refilter = [&] {
+        // 等第排序／分組需要成績；只在 Grade 鍵時整批查出
+        std::vector<ScoreRecord> bests;
+        if (sortKey == SortKey::Grade) {
+            bests.resize(entries.size());
+            for (int i = 0; i < static_cast<int>(entries.size()); ++i)
+                bests[i] = scores.best(entries[i].path.string());
+        }
+        auto rowOf = [&](int i) {
+            return SortRow{&entries[i].label, &entries[i].metrics,
+                           bests.empty() ? nullptr : &bests[i]};
+        };
         filtered.clear();
         for (int i = 0; i < static_cast<int>(entries.size()); ++i)
             if (query.empty() || strutil::icontains(entries[i].label, query))
                 filtered.push_back(i);
+        std::sort(filtered.begin(), filtered.end(), [&](int a, int b) {
+            return sortRowLess(sortKey, sortAsc, rowOf(a), rowOf(b));
+        });
+        // 重建顯示列（搜尋中不插群組標頭，維持平清單）
+        rows.clear();
+        std::string lastGroup;
+        for (const int idx : filtered) {
+            if (query.empty()) {
+                std::string g = groupName(sortKey, rowOf(idx));
+                if (g != lastGroup) {
+                    rows.push_back(MenuRow{-1, g});
+                    lastGroup = std::move(g);
+                }
+            }
+            rows.push_back(MenuRow{idx, {}});
+        }
         if (!filtered.empty() &&
             std::find(filtered.begin(), filtered.end(), selected) == filtered.end())
             selected = filtered[0];  // 舊選取被篩掉 → 跳到第一個符合項
@@ -588,8 +625,21 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
         selected = filtered[((pos + dir) % n + n) % n];
     };
 
+    // 背景指標計算（長度／音符／難度排序用）：獨立執行緒避免擋住試聽與摘要載入。
+    // 換排序鍵時翻動 stop 旗標讓佇列中的舊任務快速返回；已完成結果照樣可併入快取。
+    Loader metricLoader;
+    auto metricStop = std::make_shared<std::atomic<bool>>(false);
+    struct MetricJob {
+        fs::path path;
+        std::future<MapMetrics> fut;
+    };
+    std::vector<MetricJob> metricJobs;
+    int metricTotal = 0;
+    bool metricScanning = false;
+
     // 離開選單前刪除 kitty 圖片，避免殘留到遊玩畫面
     auto leave = [&](int r) {
+        *metricStop = true;
         if (!coverPath.empty()) term.write(kKittyDeleteAll);
         return r;
     };
@@ -644,6 +694,15 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
                 continue;
             }
             if (e.code == '/') { searching = true; continue; }
+            if (e.code == 's' || e.code == 'S') {  // s 換排序鍵；S（Shift+s）反轉方向
+                if (e.code == 's') sortKey = nextSortKey(sortKey);
+                else sortAsc = !sortAsc;
+                *metricStop = true;   // 停掉舊批次；未完成的工作會快速返回
+                metricJobs.clear();
+                metricScanning = false;
+                filterDirty = true;
+                continue;
+            }
             if (e.code == 27 || e.code == 'q') return leave(kMenuQuit);
             if (e.code == 9) return leave(kMenuSettings);  // Tab
             if (e.code == 'm') return leave(kMenuMods);
@@ -653,6 +712,50 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
             if (e.code == 13 || e.code == 32) return leave(selected);
         }
         if (filterDirty) refilter();
+
+        // 背景指標計算：排序鍵需要時把缺指標的譜面丟給獨立執行緒補算
+        if ((sortNeedsInfo(sortKey) || sortNeedsDiff(sortKey)) && !metricScanning) {
+            const bool needDiff = sortNeedsDiff(sortKey);
+            metricStop = std::make_shared<std::atomic<bool>>(false);  // 每輪新旗標
+            const auto stop = metricStop;
+            for (const Entry& en : entries) {
+                const bool d = needDiff && !en.metrics.quaverDiff;
+                if (!d && en.metrics.info) continue;  // 已齊（diff 工作會連摘要一起算）
+                const fs::path p = en.path;
+                metricJobs.push_back({p, metricLoader.submit([p, d, stop] {
+                    if (*stop) return MapMetrics{};
+                    MapMetrics m;
+                    loadMetrics(p, m, d);
+                    return m;
+                })});
+            }
+            metricTotal = static_cast<int>(metricJobs.size());
+            metricScanning = !metricJobs.empty();
+        }
+        {  // 收成已完成工作，併入 Entry 快取並標記重排
+            bool merged = false;
+            for (auto it = metricJobs.begin(); it != metricJobs.end();) {
+                if (it->fut.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+                    ++it;
+                    continue;
+                }
+                const fs::path path = it->path;
+                MapMetrics m = it->fut.get();
+                it = metricJobs.erase(it);
+                const auto jt = std::find_if(entries.begin(), entries.end(),
+                                             [&](const Entry& en) { return en.path == path; });
+                if (jt == entries.end()) continue;
+                if (!jt->metrics.info && m.info) jt->metrics.info = m.info;
+                if (!jt->metrics.quaverDiff && m.quaverDiff) {
+                    jt->metrics.quaverDiff = m.quaverDiff;
+                    jt->metrics.osuStar = m.osuStar;
+                }
+                merged = true;
+            }
+            if (metricJobs.empty()) metricScanning = false;
+            if (merged) filterDirty = true;
+        }
+
         if (selected != lastSel) {  // 換選取：重啟防抖（先不停試聽）
             lastSel = selected;
             selChangedAt = Clock::now();
@@ -782,12 +885,24 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
         canvas.putText(2, 1, "OVERKEY  (TUI)", kGold);
         canvas.putText(2, 2,
                        searching ? "type to filter   enter play   esc clear"
-                                 : "up/down move   enter play   / search   m mods   "
-                                   "tab settings   q quit",
+                                 : "up/down move   enter play   / search   s sort (S order)   "
+                                   "m mods   tab settings   q quit",
                        kGray);
         if (searching || !query.empty()) {  // 搜尋狀態列
             const std::string line = "search: " + query + (searching ? "_" : "");
             canvas.putText(2, 3, line, searching ? kGold : kGray);
+        } else {  // 排序／分組狀態列（背景指標計算中附進度）
+            char sbuf[64];
+            std::snprintf(sbuf, sizeof(sbuf), "sort: %s %s", sortKeyName(sortKey),
+                          sortAsc ? "asc" : "desc");
+            std::string line = sbuf;
+            if (metricScanning && metricTotal > 0) {
+                char abuf[32];
+                const int done = metricTotal - static_cast<int>(metricJobs.size());
+                std::snprintf(abuf, sizeof(abuf), "   analyzing %d/%d", done, metricTotal);
+                line += abuf;
+            }
+            canvas.putText(2, 3, line, kGold);
         }
         if (rateModded(rate)) {  // 有開 mod 時提示
             char rbuf[24];
@@ -796,24 +911,32 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
         }
         if (autoPlay) canvas.putText(term.cols() / 2 - 2, 2, "AUTO", kGold);
 
-        if (filtered.empty()) {
+        if (rows.empty()) {
             canvas.putText(2, 4,
                            query.empty() ? "no mania 4K/7K maps found" : "no match",
                            judgeRgb(Judgment::Miss));
         } else {
             const int top = 4;
             const int visible = term.rows() - top - 2;
-            const auto selIt = std::find(filtered.begin(), filtered.end(), selected);
-            const int selPos =
-                (selIt == filtered.end()) ? 0 : static_cast<int>(selIt - filtered.begin());
-            int scroll = std::max(0, selPos - visible / 2);
-            scroll = std::min(scroll, std::max(0, (int)filtered.size() - visible));
+            // 以列（項目 + 標頭混排）為單位捲動；找到選取項所在列
+            int selRow = 0;
+            for (int i = 0; i < static_cast<int>(rows.size()); ++i)
+                if (rows[i].entry == selected) {
+                    selRow = i;
+                    break;
+                }
+            int scroll = std::max(0, selRow - visible / 2);
+            scroll = std::min(scroll, std::max(0, (int)rows.size() - visible));
             const int listW = term.cols() / 2 - 2;
-            for (int i = 0; i < visible && scroll + i < (int)filtered.size(); ++i) {
-                const int idx = filtered[scroll + i];
-                const bool sel = (idx == selected);
+            for (int i = 0; i < visible && scroll + i < (int)rows.size(); ++i) {
+                const MenuRow& r = rows[scroll + i];
+                if (r.entry < 0) {  // 群組標頭
+                    canvas.putText(2, top + i, r.header, kGold);
+                    continue;
+                }
+                const bool sel = (r.entry == selected);
                 std::string line =
-                    (sel ? "> " : "  ") + ellipsize(entries[idx].label, listW - 2);
+                    (sel ? "> " : "  ") + ellipsize(entries[r.entry].label, listW - 2);
                 canvas.putText(2, top + i, line, sel ? kWhite : kGray);
             }
             if (infoReady) {
@@ -1547,9 +1670,11 @@ int main(int argc, char* argv[]) {
         int selected = 0;
         float rate = 1.0f;  // rate mod（暫時性，不存檔，每次啟動為 1.0x）
         bool autoPlay = false;
+        SortKey sortKey = SortKey::Title;  // 排序／分組狀態（跨場次保留，不存檔）
+        bool sortAsc = true;
         while (true) {
             const int choice = runMenu(term, entries, selected, settings.musicVolume, rate,
-                                       autoPlay, scores, importer, mapsDir);
+                                       autoPlay, scores, importer, mapsDir, sortKey, sortAsc);
             if (choice == kMenuQuit) break;
             if (choice == kMenuSettings) {
                 runSettings(term, settings);

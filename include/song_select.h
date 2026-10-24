@@ -40,6 +40,7 @@ private:
         std::filesystem::path path;
         std::string label;
         MapMetrics metrics;  // 延遲載入並快取（摘要／難度）
+        int keyCount = 0;    // 掃描時探測得知（鍵數篩選用；解析免費）
     };
     // 顯示用的一列：一般項目或群組標頭（entry = entries_ 索引，-1 表標頭）
     struct Row {
@@ -75,6 +76,7 @@ private:
     bool searching_ = false;         // 搜尋輸入模式（/ 進入，Esc 清除離開）
     SortKey sortKey_ = SortKey::Title;  // 目前排序／分組鍵（S 切換）
     bool sortAsc_ = true;               // 排序方向（Shift+S 反轉）
+    int keyFilter_ = kKeyFilterAll;     // 鍵數篩選 bitmask（數字鍵 4–7 / 點晶片切換）
     bool autoPlay_ = false;  // 供 draw() 顯示指示器
     float rate_ = 1.0f;
 

@@ -15,15 +15,25 @@ std::string keyName(int code) {
     return TextFormat("#%d", code);
 }
 
-// 欄位配置：0-3 數值，4-10 為 7K 鍵位，11-14 為 4K 鍵位
+// 欄位配置：0-5 數值，之後每種鍵數一段（7K、6K、5K、4K），用四個直欄排開
 constexpr int kNumericFields = 6;
-constexpr int k7kBase = kNumericFields;       // 6
-constexpr int k4kBase = kNumericFields + 7;   // 13
-constexpr int kTotalFields = kNumericFields + 7 + 4;  // 17
+constexpr int kKeyCounts[] = {7, 6, 5, 4};      // 各直欄（由左而右）
+constexpr int kNumKeyCols = 4;
+constexpr int kFieldBase[kNumKeyCols] = {kNumericFields, 6 + 7, 6 + 7 + 6, 6 + 7 + 6 + 5};
+constexpr int kTotalFields = kNumericFields + 7 + 6 + 5 + 4;  // 28
 
 int* keyForField(Settings& s, int field) {
-    if (field >= k7kBase && field < k4kBase) return &s.keys[field - k7kBase];
-    if (field >= k4kBase && field < kTotalFields) return &s.keys4[field - k4kBase];
+    for (int c = 0; c < kNumKeyCols; ++c) {
+        if (field >= kFieldBase[c] && field < kFieldBase[c] + kKeyCounts[c]) {
+            const int lane = field - kFieldBase[c];
+            switch (kKeyCounts[c]) {
+                case 7: return &s.keys[lane];
+                case 6: return &s.keys6[lane];
+                case 5: return &s.keys5[lane];
+                default: return &s.keys4[lane];
+            }
+        }
+    }
     return nullptr;
 }
 
@@ -100,24 +110,28 @@ void SettingsScreen::draw() const {
     y += 42;
     const char* shapeName[] = {"Bar", "Round", "Round (kitty*)"};
     drawRow(5, "Note shape", shapeName[std::clamp(s_.noteShape, 0, 2)], y);
-    y += 50;
+    y += 56;
 
-    DrawText("7K KEYBINDS", 56, y, 20, Fade(RAYWHITE, 0.55f));
-    y += 30;
-    for (int i = 0; i < 7; ++i) {
-        const std::string val =
-            (rebinding_ == k7kBase + i) ? "press a key..." : keyName(s_.keys[i]);
-        drawRow(k7kBase + i, TextFormat("Lane %d", i + 1), val, y);
-        y += 34;
-    }
-    y += 16;
-    DrawText("4K KEYBINDS", 56, y, 20, Fade(RAYWHITE, 0.55f));
-    y += 30;
-    for (int i = 0; i < 4; ++i) {
-        const std::string val =
-            (rebinding_ == k4kBase + i) ? "press a key..." : keyName(s_.keys4[i]);
-        drawRow(k4kBase + i, TextFormat("Lane %d", i + 1), val, y);
-        y += 34;
+    // 鍵位區：4 個直欄（7K／6K／5K／4K），欄內由上往下為 Lane 1..N
+    constexpr int kColW = 190;
+    constexpr int kColX[kNumKeyCols] = {56, 56 + 216, 56 + 432, 56 + 648};
+    for (int c = 0; c < kNumKeyCols; ++c) {
+        const int kc = kKeyCounts[c];
+        const int base = kFieldBase[c];
+        DrawText(TextFormat("%dK KEYBINDS", kc), kColX[c], y, 20, Fade(RAYWHITE, 0.55f));
+        int ly = y + 30;
+        const int* laneKeys = s_.laneKeys(kc).data();
+        for (int i = 0; i < kc; ++i) {
+            const int field = base + i;
+            const bool sel = (field == selected_);
+            if (sel) DrawRectangle(kColX[c] - 10, ly - 4, kColW, 32, Color{70, 55, 80, 255});
+            DrawText(TextFormat("%d", i + 1), kColX[c], ly, 20, sel ? RAYWHITE : Fade(RAYWHITE, 0.7f));
+            const std::string val = (rebinding_ == field) ? "press a key..." : keyName(laneKeys[i]);
+            const char* v = val.c_str();
+            DrawText(v, kColX[c] + kColW - 16 - MeasureText(v, 20), ly, 20,
+                     rebinding_ == field ? GOLD : (sel ? GOLD : Fade(RAYWHITE, 0.8f)));
+            ly += 34;
+        }
     }
 
     const char* hint =

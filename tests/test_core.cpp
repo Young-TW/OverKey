@@ -11,6 +11,7 @@
 #include "play.h"
 #include "pp.h"
 #include "scores.h"
+#include "settings.h"
 #include "strutil.h"
 
 namespace fs = std::filesystem;
@@ -87,10 +88,12 @@ void testMapParsing() {
     CHECK(bm4.notes[0].column == 0);
     CHECK(bm4.notes[1].column == 3);
 
-    // 篩選：4K 支援、std/其他鍵數不支援
+    // 篩選：4K–7K 支援；非 mania、支援範圍外鍵數不支援
     CHECK(probeBeatmap(writeOsu("4k2.osu", 3, 4, -1, ho4)).isSupported());
+    CHECK(probeBeatmap(writeOsu("5k.osu", 3, 5, -1, ho4)).isSupported());     // 5K 支援
+    CHECK(probeBeatmap(writeOsu("6k.osu", 3, 6, -1, ho4)).isSupported());     // 6K 支援
     CHECK(!probeBeatmap(writeOsu("std.osu", 0, 5, -1, ho4)).isSupported());   // 非 mania
-    CHECK(!probeBeatmap(writeOsu("5k.osu", 3, 5, -1, ho4)).isSupported());    // 5K 未支援
+    CHECK(!probeBeatmap(writeOsu("8k.osu", 3, 8, -1, ho4)).isSupported());    // 8K 未支援
 
     // findHitSound：無取樣→空；有則找到並依優先序
     const fs::path dir = p.parent_path();
@@ -468,6 +471,36 @@ void testLibrary() {
     CHECK(k == SortKey::Title);
 }
 
+// 鍵數篩選器（4K–7K bitmask）：範圍檢查、切換、最後一種不可關
+void testKeyFilter() {
+    std::printf("key filter\n");
+    CHECK(keyFilterAllows(kKeyFilterAll, 4));
+    CHECK(keyFilterAllows(kKeyFilterAll, 5));
+    CHECK(keyFilterAllows(kKeyFilterAll, 6));
+    CHECK(keyFilterAllows(kKeyFilterAll, 7));
+    CHECK(!keyFilterAllows(kKeyFilterAll, 3));   // 支援範圍外
+    CHECK(!keyFilterAllows(kKeyFilterAll, 8));
+
+    int m = toggleKeyFilter(kKeyFilterAll, 5);   // 關 5K
+    CHECK(!keyFilterAllows(m, 5));
+    CHECK(keyFilterAllows(m, 4) && keyFilterAllows(m, 6) && keyFilterAllows(m, 7));
+    m = toggleKeyFilter(m, 5);                   // 再開 5K
+    CHECK(keyFilterAllows(m, 5));
+
+    m = toggleKeyFilter(toggleKeyFilter(toggleKeyFilter(kKeyFilterAll, 4), 5), 6);
+    CHECK(m == (1 << 7));                        // 只剩 7K
+    CHECK(toggleKeyFilter(m, 7) == m);           // 唯一亮著的關不掉（避免篩空）
+    CHECK(toggleKeyFilter(kKeyFilterAll, 2) == kKeyFilterAll);  // 範圍外忽略
+
+    // 各鍵數預設鍵位表長度正確（支援範圍外回空）
+    Settings s;
+    CHECK(s.laneKeys(4).size() == 4 && s.laneKeys(4)[0] == s.keys4[0]);
+    CHECK(s.laneKeys(5).size() == 5 && s.laneKeys(5)[2] == s.keys5[2]);
+    CHECK(s.laneKeys(6).size() == 6 && s.laneKeys(6)[0] == s.keys6[0]);
+    CHECK(s.laneKeys(7).size() == 7 && s.laneKeys(7)[3] == s.keys[3]);
+    CHECK(s.laneKeys(3).empty() && s.laneKeys(8).empty());
+}
+
 }  // namespace
 
 int main() {
@@ -483,6 +516,7 @@ int main() {
     testScores();
     testStrutil();
     testLibrary();
+    testKeyFilter();
 
     std::error_code ec;
     fs::remove_all(fs::temp_directory_path() / "overkey_test", ec);

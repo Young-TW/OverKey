@@ -31,6 +31,16 @@ std::string ellipsize(const std::string& s, int fontSize, int maxW) {
     while (!t.empty() && MeasureText((t + "...").c_str(), fontSize) > maxW) t.pop_back();
     return t + "...";
 }
+
+// 鍵數篩選晶片（4K–7K）：右上角一排；數字鍵或滑鼠點擊切換（至少保留一種亮著）
+Rectangle keyChipRect(int idx) {  // idx 0..3 → 4K..7K
+    constexpr int w = 48, h = 26, gap = 8, y = 92;
+    constexpr int x0 = kVirtualW - 40 - ((kKeyFilterMax - kKeyFilterMin + 1) * w +
+                                         (kKeyFilterMax - kKeyFilterMin) * gap);
+    return Rectangle{static_cast<float>(x0 + idx * (w + gap)), static_cast<float>(y),
+                     static_cast<float>(w), static_cast<float>(h)};
+}
+constexpr KeyboardKey kChipKeys[] = {KEY_FOUR, KEY_FIVE, KEY_SIX, KEY_SEVEN};
 }  // namespace
 
 SongSelect::SongSelect(std::filesystem::path mapsDir)
@@ -57,7 +67,7 @@ bool SongSelect::makeEntry(const std::filesystem::path& p, Entry& out) const {
     // 優先用譜面標題，缺 metadata 時退回相對路徑
     std::string label = h.label();
     if (label.empty()) label = p.lexically_relative(mapsDir_).replace_extension("").string();
-    out = Entry{p, std::move(label), {}};
+    out = Entry{p, std::move(label), {}, h.keyCount};
     return true;
 }
 
@@ -104,6 +114,7 @@ void SongSelect::rebuildView(const std::filesystem::path& preserve) {
     itemCount_ = 0;
     std::string lastGroup;
     for (const int idx : order) {
+        if (!keyFilterAllows(keyFilter_, entries_[idx].keyCount)) continue;
         if (!query_.empty() && !strutil::icontains(entries_[idx].label, query_)) continue;
         if (query_.empty()) {
             const std::string g = groupName(sortKey_, rowOf(idx));
@@ -312,6 +323,22 @@ MenuResult SongSelect::run(Viewport& vp, float musicVolume, const ScoreBook& sco
                 }
                 rebuildView(selectedPath());
             }
+            for (int i = 0; i <= kKeyFilterMax - kKeyFilterMin; ++i)  // 數字鍵切換鍵數篩選
+                if (IsKeyPressed(kChipKeys[i])) {
+                    keyFilter_ = toggleKeyFilter(keyFilter_, kKeyFilterMin + i);
+                    rebuildView(selectedPath());
+                }
+        }
+        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {  // 點晶片也可切換篩選
+            Vector2 vm;
+            if (vp.virtualMouse(vm)) {
+                for (int i = 0; i <= kKeyFilterMax - kKeyFilterMin; ++i) {
+                    if (CheckCollisionPointRec(vm, keyChipRect(i))) {
+                        keyFilter_ = toggleKeyFilter(keyFilter_, kKeyFilterMin + i);
+                        rebuildView(selectedPath());
+                    }
+                }
+            }
         }
         if (IsKeyPressed(KEY_ESCAPE)) {
             if (searching_) {  // 先清搜尋，再按一次才離開
@@ -430,8 +457,25 @@ void SongSelect::draw() const {
         }
     }
 
+    {  // 鍵數篩選晶片（4K–7K）：亮＝顯示該鍵數
+        const Rectangle r0 = keyChipRect(0);
+        const char* label = "KEYS";
+        DrawText(label, static_cast<int>(r0.x) - MeasureText(label, 18) - 12,
+                 static_cast<int>(r0.y) + 4, 18, Fade(RAYWHITE, 0.55f));
+        for (int i = 0; i <= kKeyFilterMax - kKeyFilterMin; ++i) {
+            const Rectangle r = keyChipRect(i);
+            const bool on = keyFilterAllows(keyFilter_, kKeyFilterMin + i);
+            const char* txt = TextFormat("%dK", kKeyFilterMin + i);
+            if (on) DrawRectangleRec(r, Color{70, 55, 80, 255});
+            DrawRectangleLinesEx(r, 2, on ? GOLD : Fade(RAYWHITE, 0.25f));
+            DrawText(txt,
+                     static_cast<int>(r.x) + (static_cast<int>(r.width) - MeasureText(txt, 20)) / 2,
+                     static_cast<int>(r.y) + 3, 20, on ? RAYWHITE : Fade(RAYWHITE, 0.35f));
+        }
+    }
+
     if (entries_.empty()) {
-        const char* msg = "找不到 mania 4K/7K 譜面（請確認 maps 目錄路徑）";
+        const char* msg = "找不到 mania 4K-7K 譜面（請確認 maps 目錄路徑）";
         DrawText(msg, w / 2 - MeasureText(msg, 28) / 2, kVirtualH / 2 - 14, 28, RED);
         const char* hint = "Press ESC to exit";
         DrawText(hint, w / 2 - MeasureText(hint, 22) / 2, kVirtualH - 60, 22,
@@ -509,7 +553,7 @@ void SongSelect::draw() const {
 
         y += 8;
         const int sec = bi.lengthMs / 1000;
-        const bool supported = (bi.keyCount == 4 || bi.keyCount == 7);
+        const bool supported = (bi.keyCount >= 4 && bi.keyCount <= 7);
         DrawText(TextFormat("Keys     %dK", bi.keyCount), kPanelX, y, 22,
                  supported ? GREEN : ORANGE);
         y += 30;
@@ -540,8 +584,8 @@ void SongSelect::draw() const {
 
     const char* hint =
         searching_ ? "type to search   BACKSPACE delete   ENTER play   ESC clear"
-                   : "UP/DOWN select   ENTER play   / search   S sort (Shift+S order)   M auto   "
-                     "LEFT/RIGHT rate   TAB settings   F11 fullscreen   ESC quit";
+                   : "UP/DOWN select   ENTER play   / search   S sort (Shift+S)   4-7 keys   "
+                     "M auto   LEFT/RIGHT rate   TAB settings   ESC quit";
     DrawText(hint, w / 2 - MeasureText(hint, 22) / 2, kVirtualH - 55, 22,
              Fade(RAYWHITE, 0.6f));
 }

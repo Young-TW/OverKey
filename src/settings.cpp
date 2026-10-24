@@ -49,6 +49,20 @@ Settings loadSettings(const std::filesystem::path& file) {
                 while (i < 7 && std::getline(ss, tok, ',')) {
                     s.keys[i++] = std::stoi(trim(tok));
                 }
+            } else if (key == "keys6") {
+                std::stringstream ss(val);
+                std::string tok;
+                int i = 0;
+                while (i < 6 && std::getline(ss, tok, ',')) {
+                    s.keys6[i++] = std::stoi(trim(tok));
+                }
+            } else if (key == "keys5") {
+                std::stringstream ss(val);
+                std::string tok;
+                int i = 0;
+                while (i < 5 && std::getline(ss, tok, ',')) {
+                    s.keys5[i++] = std::stoi(trim(tok));
+                }
             } else if (key == "keys4") {
                 std::stringstream ss(val);
                 std::string tok;
@@ -75,6 +89,12 @@ void saveSettings(const Settings& s, const std::filesystem::path& file) {
     out << "noteShape=" << s.noteShape << "\n";
     out << "keys=";
     for (int i = 0; i < 7; ++i) out << (i ? "," : "") << s.keys[i];
+    out << "\n";
+    out << "keys6=";
+    for (int i = 0; i < 6; ++i) out << (i ? "," : "") << s.keys6[i];
+    out << "\n";
+    out << "keys5=";
+    for (int i = 0; i < 5; ++i) out << (i ? "," : "") << s.keys5[i];
     out << "\n";
     out << "keys4=";
     for (int i = 0; i < 4; ++i) out << (i ? "," : "") << s.keys4[i];

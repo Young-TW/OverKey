@@ -4,10 +4,10 @@
 
 A falling-rhythm game (osu!mania-style) in C++20, with **two frontends sharing one
 logic core**: a graphical version (raylib) and a terminal version (TUI). Supports
-**4K and 7K** mania beatmaps in the `.osu` format.
+**4K, 5K, 6K and 7K** mania beatmaps in the `.osu` and `.qua` formats.
 
 ```
-選歌（自動篩 4K/7K，hover 試聽副歌）→ 倒數 → 下落遊玩（長押、可調速、聲光）
+選歌（4K–7K 鍵數篩選，hover 試聽副歌）→ 倒數 → 下落遊玩（長押、可調速、聲光）
 → 暫停選單 → 結算（評級、誤差直方圖、offset 建議）→ 回選單
 ```
 
@@ -15,7 +15,8 @@ logic core**: a graphical version (raylib) and a terminal version (TUI). Support
 
 - **Two frontends, one core**: judgment, scoring, timing live in a raylib-free core
   (`PlaySession` + `SongClock`); the GUI and TUI are thin shells over it.
-- **4K & 7K** mania support (column mapping driven by the beatmap's key count).
+- **4K–7K** mania support: 4K/5K/6K/7K beatmaps (column mapping driven by the
+  beatmap's key count), each with its own default and rebindable key layout.
 - **5-tier judgment**: Perfect / Great / Good / Bad / Miss, with combo and accuracy.
 - **Vertical hit-error meter** beside the playfield (both frontends): an
   osu-style judgment bar drawn vertically — center line is 0 ms, up = early,
@@ -31,13 +32,16 @@ logic core**: a graphical version (raylib) and a terminal version (TUI). Support
   drift anchor — no judder from the quantized audio position).
 - **Song select** with metadata panel and **chorus preview** on hover (osu `PreviewTime`),
   plus **live search** (press `/`, type to filter artist/title/difficulty, `Esc` clears).
+- **Key-count filter** (Quaver-style): toggle 4K/5K/6K/7K chips with the number keys
+  `4`–`7` (or click the chips in the GUI) to show only beatmaps of those key counts;
+  at least one key count always stays on.
 - **Sortable / grouped song list**: press `S` to cycle sort keys — title, difficulty
   (Quaver/osu★), best grade, length, note count — and `Shift+S` to flip the direction.
   The list is grouped with headers (`SS`/`S`/`A`…`UNPLAYED`, `0 - 2 ★`/`2 - 4 ★`…, `A`–`Z`,
   time and note buckets); metrics are computed in a background thread with a progress
   indicator.
 - **Settings** (persisted to `overkey.cfg`, shared by both frontends): audio offset,
-  scroll speed, music/effect volume, per-lane keybinds for 4K and 7K.
+  scroll speed, music/effect volume, per-lane keybinds for 4K, 5K, 6K and 7K.
 - **Result screen**: grade, accuracy, per-tier counts, timing-error histogram, and a
   suggested offset for calibration.
 - **Pause menu** (Resume / Retry / Quit), **quick retry**, **live speed adjust**.
@@ -98,7 +102,7 @@ The repo ships one bundled chart, **`maps/OverKey Sample/7K Tutorial.osu`** — 
 7K pattern with no audio or background, so the game has something to play on first
 launch. Drop your own beatmaps into `maps/` alongside it (they stay out of git).
 
-Point the game at a folder of beatmaps (4K or 7K); non-mania and other key counts are
+Point the game at a folder of beatmaps (4K–7K); non-mania and other key counts are
 filtered out automatically. Both formats are supported:
 
 - **osu!mania** `.osu` (archives: `.osz`)
@@ -152,6 +156,8 @@ If your npm blocks install scripts and `require("realm")` fails afterwards, run
 | | GUI | TUI |
 |---|---|---|
 | Lanes (7K default) | `S D F Space J K L` | same |
+| Lanes (6K default) | `S D F J K L` | same |
+| Lanes (5K default) | `D F Space J K` | same |
 | Lanes (4K default) | `D F J K` | same |
 | Pause | `Esc` | `Esc` |
 | Quick retry | `` ` `` / `~` | `` ` `` / `~` |
@@ -159,6 +165,7 @@ If your npm blocks install scripts and `require("realm")` fails afterwards, run
 | Settings (from menu) | `Tab` | `Tab` |
 | Fullscreen toggle (GUI) | `F11` | — |
 | Search maps (in menu) | `/`, Esc clears | `/`, Esc clears |
+| Key-count filter (in menu) | `4` `5` `6` `7` or click chips | `4` `5` `6` `7` |
 | Sort/group songs | `S` key, `Shift+S` order | `s` key, `S` order |
 | Menu navigate | `↑ ↓`, Enter, Esc | `↑↓` or `j k`, Enter, `q` |
 

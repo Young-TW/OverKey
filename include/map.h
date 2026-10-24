@@ -39,8 +39,8 @@ struct BeatmapHeader {
     std::string title;
     std::string artist;
     std::string version;
-    // 目前支援的 mania 鍵數：4K 與 7K
-    bool isSupported() const { return mode == 3 && (keyCount == 4 || keyCount == 7); }
+    // 目前支援的 mania 鍵數：4K–7K
+    bool isSupported() const { return mode == 3 && keyCount >= 4 && keyCount <= 7; }
     // 清單顯示名："Artist - Title [Diff]"；缺 title 時回傳空字串
     std::string label() const {
         if (title.empty()) return "";

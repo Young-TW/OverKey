@@ -47,8 +47,8 @@ private:
     bool autoPlay_ = false;
     float rate_ = 1.0f;
 
-    int keyCount_ = 7;          // 音軌數（4 或 7）
-    const int* laneKeys_ = nullptr;  // 對應鍵位集（指向 settings_.keys / keys4）
+    int keyCount_ = 7;          // 音軌數（4–7）
+    const int* laneKeys_ = nullptr;  // 對應鍵位集（settings_.laneKeys(keyCount_)）
     int playfieldW_ = 0;
     int originX_ = 0;
 

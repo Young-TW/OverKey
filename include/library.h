@@ -55,4 +55,16 @@ bool sortRowLess(SortKey k, bool asc, const SortRow& a, const SortRow& b);
 // 群組標頭名稱：同排序鍵下相鄰同名視同組（如 "SS"、"2 - 4 ★"、"UNPLAYED"、"#"）。
 std::string groupName(SortKey k, const SortRow& row);
 
+// ---- 鍵數篩選器（4K–7K 各一個開關，bitmask；GUI 與 TUI 選單共用）----
+// bit k 代表 kK 顯示與否；kKeyFilterMin..kKeyFilterMax 以外不屬支援範圍。
+inline constexpr int kKeyFilterMin = 4;
+inline constexpr int kKeyFilterMax = 7;
+inline constexpr int kKeyFilterAll =  // 預設全開＝不篩
+    ((1 << (kKeyFilterMax - kKeyFilterMin + 1)) - 1) << kKeyFilterMin;
+
+// 譜面鍵數是否通過篩選（支援範圍外恆 false）
+bool keyFilterAllows(int mask, int keyCount);
+// 切換單一鍵數的顯示；為避免清單被篩空，唯一仍開著的鍵數不可關（回傳原 mask）
+int toggleKeyFilter(int mask, int keyCount);
+
 #endif

@@ -3,6 +3,7 @@
 
 #include <array>
 #include <filesystem>
+#include <span>
 
 class Viewport;
 
@@ -15,8 +16,23 @@ struct Settings {
     int noteShape = 0;           // 0=Bar 1=Round 2=Round(kitty 圖片, 實驗性)
     // 7K 鍵位（raylib keycode）；預設 S D F SPACE J K L
     std::array<int, 7> keys{83, 68, 70, 32, 74, 75, 76};
+    // 6K 鍵位；預設 S D F J K L
+    std::array<int, 6> keys6{83, 68, 70, 74, 75, 76};
+    // 5K 鍵位；預設 D F SPACE J K
+    std::array<int, 5> keys5{68, 70, 32, 74, 75};
     // 4K 鍵位；預設 D F J K
     std::array<int, 4> keys4{68, 70, 74, 75};
+
+    // 依鍵數取對應鍵位表（支援 4K–7K）；支援範圍外回傳空 span
+    std::span<const int> laneKeys(int keyCount) const {
+        switch (keyCount) {
+            case 4: return keys4;
+            case 5: return keys5;
+            case 6: return keys6;
+            case 7: return keys;
+            default: return {};
+        }
+    }
 };
 
 Settings loadSettings(const std::filesystem::path& file);

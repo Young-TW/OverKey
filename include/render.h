@@ -25,6 +25,18 @@ public:
         ClearBackground(bg);
     }
 
+    // 滑鼠游標換算成虛擬座標（end() 的逆變換）；落在 letterbox 黑邊內回傳 false
+    bool virtualMouse(Vector2& out) const {
+        const float sw = static_cast<float>(GetScreenWidth());
+        const float sh = static_cast<float>(GetScreenHeight());
+        const float scale = std::min(sw / kVirtualW, sh / kVirtualH);
+        const float ox = (sw - kVirtualW * scale) / 2;
+        const float oy = (sh - kVirtualH * scale) / 2;
+        const Vector2 m = GetMousePosition();
+        out = {(m.x - ox) / scale, (m.y - oy) / scale};
+        return out.x >= 0 && out.x < kVirtualW && out.y >= 0 && out.y < kVirtualH;
+    }
+
     void end() {
         EndTextureMode();
 

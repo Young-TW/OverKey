@@ -24,6 +24,18 @@ SortKey nextSortKey(SortKey k) {
 bool sortNeedsInfo(SortKey k) { return k == SortKey::Length || k == SortKey::Notes; }
 bool sortNeedsDiff(SortKey k) { return k == SortKey::Difficulty; }
 
+bool keyFilterAllows(int mask, int keyCount) {
+    return keyCount >= kKeyFilterMin && keyCount <= kKeyFilterMax &&
+           (mask & (1 << keyCount)) != 0;
+}
+
+int toggleKeyFilter(int mask, int keyCount) {
+    if (keyCount < kKeyFilterMin || keyCount > kKeyFilterMax) return mask;
+    const int bit = 1 << keyCount;
+    if ((mask & kKeyFilterAll) == bit) return mask;  // 唯一亮著的 → 關掉會篩空，拒絕
+    return (mask ^ bit) & kKeyFilterAll;
+}
+
 void loadMetrics(const std::filesystem::path& path, MapMetrics& m, bool withDiff) {
     if (!m.info) m.info = loadBeatmapInfo(path);
     if (withDiff && !m.quaverDiff) {

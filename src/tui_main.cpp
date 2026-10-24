@@ -235,6 +235,7 @@ struct Entry {
     fs::path path;
     std::string label;
     MapMetrics metrics;  // 延遲載入排序指標（摘要／難度），背景執行緒補齊
+    int keyCount = 0;    // 掃描時探測得知（鍵數篩選用）
 };
 
 // 顯示列：一般項目（entry 為 entries 索引）或群組標頭（entry = -1）
@@ -243,14 +244,14 @@ struct MenuRow {
     std::string header;
 };
 
-// 探測單一譜面檔；支援（mania 4K/7K）則填入 out 回傳 true。
+// 探測單一譜面檔；支援（mania 4K–7K）則填入 out 回傳 true。
 bool tryMakeEntry(const fs::path& dir, const fs::path& p, Entry& out) {
     if (p.extension() != ".osu" && p.extension() != ".qua") return false;
     const BeatmapHeader h = probeBeatmap(p);
     if (!h.isSupported()) return false;
     std::string label = h.label();
     if (label.empty()) label = p.lexically_relative(dir).replace_extension("").string();
-    out = Entry{p, std::move(label)};
+    out = Entry{p, std::move(label), {}, h.keyCount};
     return true;
 }
 
@@ -543,7 +544,7 @@ struct MenuInfo {
 // sortKey/sortAsc 由呼叫端持有，跨場次保留排序/分組狀態
 int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float musicVolume,
             float rate, bool autoPlay, const ScoreBook& scores, MapImporter& importer,
-            const fs::path& mapsDir, SortKey& sortKey, bool& sortAsc) {
+            const fs::path& mapsDir, SortKey& sortKey, bool& sortAsc, int& keyFilter) {
     PixelCanvas canvas(term.cols(), term.rows());
     std::string out;
     Loader loader;  // 常駐背景載入執行緒
@@ -592,9 +593,11 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
                            bests.empty() ? nullptr : &bests[i]};
         };
         filtered.clear();
-        for (int i = 0; i < static_cast<int>(entries.size()); ++i)
+        for (int i = 0; i < static_cast<int>(entries.size()); ++i) {
+            if (!keyFilterAllows(keyFilter, entries[i].keyCount)) continue;
             if (query.empty() || strutil::icontains(entries[i].label, query))
                 filtered.push_back(i);
+        }
         std::sort(filtered.begin(), filtered.end(), [&](int a, int b) {
             return sortRowLess(sortKey, sortAsc, rowOf(a), rowOf(b));
         });
@@ -706,6 +709,12 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
             if (e.code == 27 || e.code == 'q') return leave(kMenuQuit);
             if (e.code == 9) return leave(kMenuSettings);  // Tab
             if (e.code == 'm') return leave(kMenuMods);
+            if (e.code >= '0' + kKeyFilterMin && e.code <= '0' + kKeyFilterMax) {
+                // 數字鍵 4–7 切換鍵數篩選（至少保留一種）
+                keyFilter = toggleKeyFilter(keyFilter, e.code - '0');
+                filterDirty = true;
+                continue;
+            }
             if (filtered.empty()) continue;
             if (e.code == 'j' || e.code == kKeyDown) stepSel(1);
             if (e.code == 'k' || e.code == kKeyUp) stepSel(-1);
@@ -886,8 +895,18 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
         canvas.putText(2, 2,
                        searching ? "type to filter   enter play   esc clear"
                                  : "up/down move   enter play   / search   s sort (S order)   "
-                                   "m mods   tab settings   q quit",
+                                   "4-7 keys   m mods   tab settings   q quit",
                        kGray);
+        {  // 鍵數篩選指示（右側）：亮金＝顯示、灰＝隱藏
+            int x = term.cols() - 2 - (kKeyFilterMax - kKeyFilterMin + 1) * 3;
+            canvas.putText(x - 6, 3, "keys:", kGray);
+            for (int k = kKeyFilterMin; k <= kKeyFilterMax; ++k) {
+                char kb[4];
+                std::snprintf(kb, sizeof(kb), "%dK ", k);
+                canvas.putText(x, 3, kb, keyFilterAllows(keyFilter, k) ? kGold : kGray);
+                x += 3;
+            }
+        }
         if (searching || !query.empty()) {  // 搜尋狀態列
             const std::string line = "search: " + query + (searching ? "_" : "");
             canvas.putText(2, 3, line, searching ? kGold : kGray);
@@ -913,7 +932,7 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
 
         if (rows.empty()) {
             canvas.putText(2, 4,
-                           query.empty() ? "no mania 4K/7K maps found" : "no match",
+                           query.empty() ? "no mania 4K-7K maps found" : "no match",
                            judgeRgb(Judgment::Miss));
         } else {
             const int top = 4;
@@ -1000,8 +1019,8 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
     // HUD 即時 pp / Quaver rating 計數器與結算共用的難度（rate 恆 1.0，與結算一致）；
     // QSS 較重，每局只算一次
     const double quaverDiff = quaverDifficulty(map.notes, map.keyCount, 1.0f);
-    const int keyCount = (map.keyCount == 4) ? 4 : 7;
-    const int* laneKeys = (keyCount == 4) ? settings.keys4.data() : settings.keys.data();
+    const int keyCount = std::clamp(map.keyCount, 4, 7);
+    const int* laneKeys = settings.laneKeys(keyCount).data();
     const double offset = settings.audioOffsetMs;
     double approach = kBaseApproachMs / settings.scrollSpeed;
 
@@ -1499,15 +1518,27 @@ int toStoredKey(int kittyCode) {
 void runSettings(Terminal& term, Settings& settings) {
     PixelCanvas canvas(term.cols(), term.rows());
     std::string out;
-    constexpr int k7kBase = 6;             // 前 6 項為數值欄位
-    constexpr int k4kBase = k7kBase + 7;   // 13
-    constexpr int kFields = k4kBase + 4;   // 17
+    // 前 6 項為數值欄位，之後每種鍵數一段（7K、6K、5K、4K）
+    constexpr int kNumNumeric = 6;
+    constexpr int kKeyCounts[] = {7, 6, 5, 4};
+    constexpr int kNumKeyCols = 4;
+    constexpr int kFieldBase[kNumKeyCols] = {kNumNumeric, 6 + 7, 6 + 7 + 6, 6 + 7 + 6 + 5};
+    constexpr int kFields = kNumNumeric + 7 + 6 + 5 + 4;  // 28
     int selected = 0;
     int rebinding = -1;
     // 欄位索引 → 對應 keybind 槽（nullptr 表非鍵位欄位）
     auto keySlot = [&](int field) -> int* {
-        if (field >= k7kBase && field < k4kBase) return &settings.keys[field - k7kBase];
-        if (field >= k4kBase && field < kFields) return &settings.keys4[field - k4kBase];
+        for (int c = 0; c < kNumKeyCols; ++c) {
+            if (field >= kFieldBase[c] && field < kFieldBase[c] + kKeyCounts[c]) {
+                const int lane = field - kFieldBase[c];
+                switch (kKeyCounts[c]) {
+                    case 7: return &settings.keys[lane];
+                    case 6: return &settings.keys6[lane];
+                    case 5: return &settings.keys5[lane];
+                    default: return &settings.keys4[lane];
+                }
+            }
+        }
         return nullptr;
     };
     auto next = Clock::now();
@@ -1547,7 +1578,7 @@ void runSettings(Terminal& term, Settings& settings) {
                 settings.noteScale = std::clamp(settings.noteScale + dir * 0.1f, 0.5f, 3.0f);
             else if (selected == 5 && dir)
                 settings.noteShape = (settings.noteShape + (dir > 0 ? 1 : 2)) % 3;
-            else if (selected >= k7kBase && (e.code == 13 || e.code == 32))
+            else if (selected >= kNumNumeric && (e.code == 13 || e.code == 32))
                 rebinding = selected;
         }
 
@@ -1574,20 +1605,26 @@ void runSettings(Terminal& term, Settings& settings) {
         const char* shapeName[] = {"Bar", "Round", "Round (kitty*)"};
         row(5, "Note shape", shapeName[std::clamp(settings.noteShape, 0, 2)], y++);
         ++y;
-        canvas.putText(4, y++, "7K KEYBINDS", kGray);
-        for (int i = 0; i < 7; ++i) {
-            std::snprintf(buf, sizeof(buf), "Lane %d", i + 1);
-            const std::string val =
-                (rebinding == k7kBase + i) ? "press a key..." : keyLabel(settings.keys[i]);
-            row(k7kBase + i, buf, val, y++);
-        }
-        ++y;
-        canvas.putText(4, y++, "4K KEYBINDS", kGray);
-        for (int i = 0; i < 4; ++i) {
-            std::snprintf(buf, sizeof(buf), "Lane %d", i + 1);
-            const std::string val =
-                (rebinding == k4kBase + i) ? "press a key..." : keyLabel(settings.keys4[i]);
-            row(k4kBase + i, buf, val, y++);
+        // 鍵位區：4 個直欄（7K／6K／5K／4K），欄內由上往下為 Lane 1..N
+        auto colRow = [&](int idx, const char* label, const std::string& val, int x, int ry) {
+            const bool sel = (idx == selected);
+            canvas.putText(x, ry, (sel ? "> " : "  ") + std::string(label),
+                           sel ? kWhite : kGray);
+            canvas.putText(x + 10, ry, val, rebinding == idx ? kGold : (sel ? kGold : kWhite));
+        };
+        for (int c = 0; c < kNumKeyCols; ++c) {
+            const int kc = kKeyCounts[c];
+            const int x = 4 + c * 18;
+            std::snprintf(buf, sizeof(buf), "%dK KEYBINDS", kc);
+            canvas.putText(x, y, buf, kGray);
+            const int* laneKeys = settings.laneKeys(kc).data();
+            for (int i = 0; i < kc; ++i) {
+                const int field = kFieldBase[c] + i;
+                std::snprintf(buf, sizeof(buf), "%d", i + 1);
+                const std::string val =
+                    (rebinding == field) ? "press..." : keyLabel(laneKeys[i]);
+                colRow(field, buf, val, x, y + 1 + i);
+            }
         }
         canvas.putText(4, term.rows() - 2,
                        "up/down field   left/right adjust   enter rebind   esc save", kGray);
@@ -1672,9 +1709,11 @@ int main(int argc, char* argv[]) {
         bool autoPlay = false;
         SortKey sortKey = SortKey::Title;  // 排序／分組狀態（跨場次保留，不存檔）
         bool sortAsc = true;
+        int keyFilter = kKeyFilterAll;     // 鍵數篩選狀態（跨場次保留，不存檔）
         while (true) {
             const int choice = runMenu(term, entries, selected, settings.musicVolume, rate,
-                                       autoPlay, scores, importer, mapsDir, sortKey, sortAsc);
+                                       autoPlay, scores, importer, mapsDir, sortKey, sortAsc,
+                                       keyFilter);
             if (choice == kMenuQuit) break;
             if (choice == kMenuSettings) {
                 runSettings(term, settings);

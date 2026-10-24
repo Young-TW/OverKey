@@ -26,7 +26,7 @@
 class PlaySession;
 
 // Quaver 官方難度（QSS v0.0.5），rate 為播放速率（1.0 原速）。
-// notes 為 0-based column、ms 時間；keyCount 4 或 7。回傳值即 Quaver 譜面 rating 數字。
+// notes 為 0-based column、ms 時間；keyCount 4–7。回傳值即 Quaver 譜面 rating 數字。
 double quaverDifficulty(const std::vector<ManiaNote>& notes, int keyCount, float rate = 1.0f);
 
 // Quaver 官方 accuracy（0..100）：Marv 100 / Perf 98.25 / Great 65 / Good 25 / Okay -100 / Miss -50

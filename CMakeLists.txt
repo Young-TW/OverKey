@@ -97,11 +97,14 @@ if(OVERKEY_BUILD_TUI)
         # 讓 MakeAvailable 只下載、不編 miniaudio 自己那堆範例/節點 target。
         SOURCE_SUBDIR extras
     )
+    # stb 沒有 release tag；master 上的 db69a22 把 stb_image_resize2.h 移進
+    # deprecated/（tui_compat 需要它），故釘在其前一個 commit 以保可重現建置。
     FetchContent_Declare(
         stb
         GIT_REPOSITORY https://github.com/nothings/stb.git
-        GIT_TAG master
-        GIT_SHALLOW TRUE
+        # 注意：指定 commit hash 時不能加 GIT_SHALLOW TRUE（shallow clone
+        # 只支援 branch/tag，抓不到任意 commit）。
+        GIT_TAG 2b2e64bc4778df6a06fbea3a5dbe61f7a76ecf19
     )
     FetchContent_MakeAvailable(miniaudio stb)
 

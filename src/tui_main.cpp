@@ -571,7 +571,7 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
     std::future<CoverResult> coverLoad;  // 背景解碼中的封面
     fs::path coverPending;
     const int coverCol = term.cols() / 2 + 2;  // 面板起始欄（1-based）
-    const int coverRow = 4;                     // 面板起始列（1-based）
+    const int coverRow = 5;                     // 面板起始列（1-based；避開第 4 列的鍵數篩選指示）
 
     // 搜尋（/ 進入、Esc 清除）：query 為即時子字串篩選；filtered 存 entries 索引（顯示順序）
     std::string query;

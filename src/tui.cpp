@@ -8,6 +8,8 @@
 #include <sys/ioctl.h>
 #include <unistd.h>
 
+#include "strutil.h"
+
 namespace tui {
 
 namespace {
@@ -201,12 +203,15 @@ void PixelCanvas::resize(int cols, int rows) {
     px_.assign(pixels, Rgb{0, 0, 0});
     textCp_.assign(static_cast<size_t>(cols_) * rows_, 0);
     textColor_.assign(static_cast<size_t>(cols_) * rows_, Rgb{0, 0, 0});
+    bgOn_.assign(static_cast<size_t>(cols_) * rows_, 0);
+    bgColor_.assign(static_cast<size_t>(cols_) * rows_, Rgb{0, 0, 0});
     prev_.assign(static_cast<size_t>(cols_) * rows_, Cell{1, 1, 1, 1, 1, 1, 1});  // 強制首幀全畫
 }
 
 void PixelCanvas::clear() {
     std::fill(on_.begin(), on_.end(), 0);
     std::fill(textCp_.begin(), textCp_.end(), 0);
+    std::fill(bgOn_.begin(), bgOn_.end(), 0);
 }
 
 void PixelCanvas::setPixel(int cx, int py, Rgb color) {
@@ -248,17 +253,38 @@ void PixelCanvas::invalidate(int cx0, int cy0, int cx1, int cy1) {
             prev_[static_cast<size_t>(y) * cols_ + x] = Cell{0xFFFFFFFFu, 1, 1, 1, 1, 1, 1};
 }
 
+void PixelCanvas::fillRectBg(int cx0, int cy0, int cx1, int cy1, Rgb color) {
+    if (cx1 < cx0) std::swap(cx0, cx1);
+    if (cy1 < cy0) std::swap(cy0, cy1);
+    cx0 = std::max(0, cx0);
+    cy0 = std::max(0, cy0);
+    cx1 = std::min(cols_ - 1, cx1);
+    cy1 = std::min(rows_ - 1, cy1);
+    for (int y = cy0; y <= cy1; ++y)
+        for (int x = cx0; x <= cx1; ++x) {
+            const size_t idx = static_cast<size_t>(y) * cols_ + x;
+            bgOn_[idx] = 1;
+            bgColor_[idx] = color;
+        }
+}
+
 void PixelCanvas::putText(int cx, int cy, const std::string& s, Rgb color) {
     if (cy < 0 || cy >= rows_) return;
     int x = cx;
-    for (char ch : s) {
-        if (x >= cols_) break;
+    for (size_t i = 0; i < s.size();) {
+        const uint32_t cp = strutil::nextCodepoint(s, i);
+        const int w = strutil::displayWidth(cp);
+        if (x + w > cols_) break;              // 寬字元不夠兩格時整個略過，避免捲到下一列
         if (x >= 0) {
             const size_t idx = static_cast<size_t>(cy) * cols_ + x;
-            textCp_[idx] = static_cast<unsigned char>(ch);
+            textCp_[idx] = cp;
             textColor_[idx] = color;
+            if (w == 2 && x + 1 < cols_) {     // 寬字元後半格補空白，蓋掉背景層殘影
+                textCp_[idx + 1] = ' ';
+                textColor_[idx + 1] = color;
+            }
         }
-        ++x;
+        x += w;
     }
 }
 
@@ -280,6 +306,10 @@ void PixelCanvas::flush(std::string& out) {
                 cell.cp = textCp_[cidx];
                 const Rgb c = textColor_[cidx];
                 cell.fr = c.r; cell.fg = c.g; cell.fb = c.b;
+                if (bgOn_[cidx]) {  // 選取高亮條等背景色
+                    const Rgb b = bgColor_[cidx];
+                    cell.br = b.r; cell.bg = b.g; cell.bb = b.b;
+                }
             } else {
                 // 取本格 8 個子像素，找填色範圍（音符為連續色帶）
                 int first = -1, last = -1;
@@ -296,6 +326,10 @@ void PixelCanvas::flush(std::string& out) {
                 }
                 if (first < 0) {
                     cell.cp = ' ';
+                    if (bgOn_[cidx]) {  // 空格也要塗背景（高亮條上的留白）
+                        const Rgb b = bgColor_[cidx];
+                        cell.br = b.r; cell.bg = b.g; cell.bb = b.b;
+                    }
                 } else if (first == 0 && last == 7) {  // 整格滿
                     cell.cp = lowerEighth(8);
                     cell.fr = color.r; cell.fg = color.g; cell.fb = color.b;

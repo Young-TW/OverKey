@@ -13,6 +13,7 @@
 #include "scores.h"
 #include "settings.h"
 #include "strutil.h"
+#include "tui.h"
 
 namespace fs = std::filesystem;
 
@@ -371,6 +372,95 @@ void testStrutil() {
     CHECK(s.empty());
     strutil::popUtf8(s);  // 空字串安全
     CHECK(s.empty());
+
+    // nextCodepoint：ASCII / 三位元組 / 四位元組 / 非法序列保底前進
+    {
+        const std::string t = "A\xE4\xB8\xAD\xF0\x9F\x98\x80";
+        std::size_t i = 0;
+        CHECK(strutil::nextCodepoint(t, i) == 'A' && i == 1);
+        CHECK(strutil::nextCodepoint(t, i) == 0x4E2D && i == 4);
+        CHECK(strutil::nextCodepoint(t, i) == 0x1F600 && i == 8);
+    }
+    {
+        const std::string bad = "\xE4\xB8";  // 不完整序列
+        std::size_t i = 0;
+        strutil::nextCodepoint(bad, i);
+        CHECK(i == 1);  // 只前進一格，不死迴圈
+        const std::string cont = "\x80";        // 裸 continuation
+        i = 0;
+        strutil::nextCodepoint(cont, i);
+        CHECK(i == 1);
+    }
+
+    // displayWidth：CJK 全形 2 格、ASCII 1 格
+    CHECK(strutil::displayWidth(static_cast<uint32_t>('A')) == 1);
+    CHECK(strutil::displayWidth(0x4E2D) == 2);    // 中
+    CHECK(strutil::displayWidth(0x3042) == 2);    // あ
+    CHECK(strutil::displayWidth(0xFF21) == 2);    // 全形Ａ
+    CHECK(strutil::displayWidth(0x2500) == 1);    // ─（box drawing）
+    CHECK(strutil::displayWidth(0x2026) == 1);    // …
+    CHECK(strutil::displayWidth(std::string("AB\xE4\xB8\xAD" "CD")) == 6);
+
+    // ellipsizeDisplay：以顯示格數截斷，不切在字元中間
+    CHECK(strutil::ellipsizeDisplay("short", 10) == "short");
+    CHECK(strutil::ellipsizeDisplay("longlonglong", 8) ==  // 7 格內容 + … 恰滿 8 格
+          std::string("longlon\xE2\x80\xA6"));
+    {  // 全 CJK（中文日本語測試，14 格）截到 8 格 → 3 字 6 格 + …
+        const std::string cjk =
+            "\xE4\xB8\xAD\xE6\x96\x87\xE6\x97\xA5\xE6\x9C\xAC\xE8\xAA\x9E\xE6\xB8\xAC\xE8\xA9\xA6";
+        CHECK(strutil::ellipsizeDisplay(cjk, 8) ==
+              "\xE4\xB8\xAD\xE6\x96\x87\xE6\x97\xA5\xE2\x80\xA6");
+    }
+    CHECK(strutil::ellipsizeDisplay("abc", 1) == "\xE2\x80\xA6");  // 只剩省略號空間
+    CHECK(strutil::ellipsizeDisplay("abc", 0).empty());
+}
+
+// PixelCanvas：UTF-8 文字排版（寬字元推進）與格子背景色（fillRectBg）的 flush 輸出
+void testPixelCanvas() {
+    std::printf("PixelCanvas\n");
+    using tui::PixelCanvas;
+    using tui::Rgb;
+
+    {  // 寬字元佔 2 格：A(1) + 東(2) + B(1) → 連續輸出 "A東 B"（東後半格補空白）
+        PixelCanvas c(10, 2);
+        c.putText(0, 0, "A\xE6\x9D\xB1" "B", Rgb{235, 235, 235});
+        std::string out;
+        c.flush(out);
+        CHECK(out.find("A\xE6\x9D\xB1 B") != std::string::npos);
+    }
+    {  // 舊行為保留：純 ASCII 位元組序列原樣輸出
+        PixelCanvas c(10, 2);
+        c.putText(0, 0, "abc", Rgb{255, 203, 0});
+        std::string out;
+        c.flush(out);
+        CHECK(out.find("abc") != std::string::npos);
+    }
+    {  // 寬字元超出右緣整個裁掉（不捲到下一列）
+        PixelCanvas c(4, 2);
+        c.putText(0, 0, "ABC\xE6\x9D\xB1", Rgb{235, 235, 235});  // 東 需 4..5 格 → 裁
+        std::string out;
+        c.flush(out);
+        CHECK(out.find("\xE6\x9D\xB1") == std::string::npos);
+    }
+    {  // fillRectBg：空格與文字格都上背景色（SGR 含 bg 分量）
+        PixelCanvas c(8, 2);
+        c.fillRectBg(0, 0, 3, 0, Rgb{70, 55, 80});
+        c.putText(0, 0, "A", Rgb{235, 235, 235});
+        std::string out;
+        c.flush(out);
+        // 背景色出現在 flush 的 SGR 序列（48;2;r;g;b）中
+        CHECK(out.find("48;2;70;55;80") != std::string::npos);
+    }
+    {  // clear() 之後背景也清掉：同一格不再是舊背景
+        PixelCanvas c(8, 2);
+        c.fillRectBg(0, 0, 3, 0, Rgb{70, 55, 80});
+        std::string out;
+        c.flush(out);
+        c.clear();
+        c.flush(out);  // 第二幀全預設：從「有背景」變「無背景」→ 需重畫含 bg 0 的 SGR
+        CHECK(out.find("48;2;0;0;0") != std::string::npos);
+        CHECK(out.find("48;2;70;55;80") == std::string::npos);
+    }
 }
 
 void testLibrary() {
@@ -515,6 +605,7 @@ int main() {
     testLiveRatings();
     testScores();
     testStrutil();
+    testPixelCanvas();
     testLibrary();
     testKeyFilter();
 

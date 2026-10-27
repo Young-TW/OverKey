@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <deque>
 #include <filesystem>
 #include <functional>
@@ -57,6 +58,20 @@ const Rgb kGold{255, 203, 0};
 const Rgb kSky{102, 191, 255};
 const Rgb kPurple{200, 122, 255};  // 同 raylib PURPLE，HUD Quaver rating 用
 const Rgb kComboDim{70, 70, 80};   // 軌道中央大字 combo 的暗灰藍
+const Rgb kSelBg{70, 55, 80};      // 選單選取列背景（同 GUI 高亮色系）
+const Rgb kRule{52, 44, 64};       // 群組標頭延伸細線
+const Rgb kScrollTrack{48, 48, 58};
+const Rgb kScrollThumb{150, 150, 170};
+
+// Quaver 難度值的配色階（藍→綠→黃→橘→紅→紫，對應約 0–25+ 的 rating 帶）
+Rgb diffRgb(double diff) {
+    if (diff < 5.0) return {102, 191, 255};
+    if (diff < 10.0) return {0, 228, 48};
+    if (diff < 15.0) return {255, 203, 0};
+    if (diff < 20.0) return {255, 161, 0};
+    if (diff < 25.0) return {230, 41, 55};
+    return kPurple;
+}
 
 // 依鍵數產生音軌配色：奇數鍵正中央為金色，其餘藍/白交替
 Rgb laneColor(int col, int keyCount) {
@@ -206,12 +221,6 @@ int laneOf(int code, const int* keys, int keyCount) {
     for (int c = 0; c < keyCount; ++c)
         if (normKey(keys[c]) == normKey(code)) return c;
     return -1;
-}
-
-std::string ellipsize(const std::string& s, int maxLen) {
-    if (static_cast<int>(s.size()) <= maxLen) return s;
-    if (maxLen <= 3) return s.substr(0, maxLen);
-    return s.substr(0, maxLen - 3) + "...";
 }
 
 // 程式合成短促打擊聲（與 GUI 版相同手法）
@@ -918,14 +927,30 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
                 x += 3;
             }
         }
+        // 計數器（接在狀態列後）：有列可顯示時才畫；selPos 為選取項在項目列中的次序
+        char cbuf[24] = "";
+        if (!rows.empty()) {
+            int selPos = 0;
+            for (int i = 0, pos = 0; i < static_cast<int>(rows.size()); ++i) {
+                if (rows[i].entry >= 0) ++pos;
+                if (rows[i].entry == selected) {
+                    selPos = pos;
+                    break;
+                }
+            }
+            std::snprintf(cbuf, sizeof(cbuf), "   %d/%d", selPos,
+                          static_cast<int>(filtered.size()));
+        }
         if (searching || !query.empty()) {  // 搜尋狀態列
-            const std::string line = "search: " + query + (searching ? "_" : "");
+            const std::string line =
+                "search: " + query + (searching ? "_" : "") + cbuf;
             canvas.putText(2, 3, line, searching ? kGold : kGray);
         } else {  // 排序／分組狀態列（背景指標計算中附進度）
             char sbuf[64];
             std::snprintf(sbuf, sizeof(sbuf), "sort: %s %s", sortKeyName(sortKey),
                           sortAsc ? "asc" : "desc");
             std::string line = sbuf;
+            line += cbuf;
             if (metricScanning && metricTotal > 0) {
                 char abuf[32];
                 const int done = metricTotal - static_cast<int>(metricJobs.size());
@@ -957,25 +982,68 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
                 }
             int scroll = std::max(0, selRow - visible / 2);
             scroll = std::min(scroll, std::max(0, (int)rows.size() - visible));
-            const int listW = term.cols() / 2 - 2;
+            const int listW = term.cols() / 2 - 2;  // 清單文字寬（格）；列佔 cx 1..listW+1
             for (int i = 0; i < visible && scroll + i < (int)rows.size(); ++i) {
                 const MenuRow& r = rows[scroll + i];
-                if (r.entry < 0) {  // 群組標頭
+                if (r.entry < 0) {  // 群組標頭：金字 + 延伸細線
                     canvas.putText(2, top + i, r.header, kGold);
+                    const int hx = 2 + strutil::displayWidth(r.header) + 1;
+                    if (hx <= listW) {
+                        std::string rule;
+                        for (int k = hx; k <= listW + 1; ++k) rule += "\xE2\x94\x80";  // ─
+                        canvas.putText(hx, top + i, rule, kRule);
+                    }
                     continue;
                 }
                 const bool sel = (r.entry == selected);
-                std::string line =
-                    (sel ? "> " : "  ") + ellipsize(entries[r.entry].label, listW - 2);
-                canvas.putText(2, top + i, line, sel ? kWhite : kGray);
+                if (sel)  // 選取列：整條高亮背景
+                    canvas.fillRectBg(1, top + i, listW + 1, top + i, kSelBg);
+                const Entry& en = entries[r.entry];
+                if (sel) canvas.putText(2, top + i, ">", kGold);
+                // 右側資訊：已快取的難度值（色階著色） + 鍵數標籤
+                char right[24];
+                if (en.metrics.quaverDiff)
+                    std::snprintf(right, sizeof(right), "%.1f  %dK", *en.metrics.quaverDiff,
+                                  en.keyCount);
+                else
+                    std::snprintf(right, sizeof(right), "%dK", en.keyCount);
+                const int rightW = strutil::displayWidth(right);
+                const int rightX = listW + 1 - rightW;
+                const int labelMax = rightX - 2 - 2;  // cx 3 起算，與右側留 1 格
+                canvas.putText(3, top + i, strutil::ellipsizeDisplay(en.label, labelMax),
+                               sel ? kWhite : kGray);
+                if (en.metrics.quaverDiff) {
+                    char dbuf[12];
+                    std::snprintf(dbuf, sizeof(dbuf), "%.1f", *en.metrics.quaverDiff);
+                    canvas.putText(rightX, top + i, dbuf, diffRgb(*en.metrics.quaverDiff));
+                    canvas.putText(rightX + (int)std::strlen(dbuf) + 2, top + i,
+                                   right + std::strlen(dbuf) + 2,
+                                   sel ? kWhite : kGray);
+                } else {
+                    canvas.putText(rightX, top + i, right, sel ? kWhite : kGray);
+                }
+            }
+            if (static_cast<int>(rows.size()) > visible) {  // 捲軸（清單右緣）
+                const int barX = listW + 2;
+                canvas.fillRectBg(barX, top, barX, top + visible - 1, kScrollTrack);
+                const int total = static_cast<int>(rows.size());
+                const int thumbH =
+                    std::max(1, static_cast<int>(std::lround((double)visible * visible / total)));
+                const int trackH = visible - thumbH;
+                const int thumbTop =
+                    top + (total > 1 ? static_cast<int>(std::lround(
+                                           (double)trackH * scroll / (total - visible)))
+                                     : 0);
+                canvas.fillRectBg(barX, thumbTop, barX, thumbTop + thumbH - 1, kScrollThumb);
             }
             if (infoReady) {
                 const int px = term.cols() / 2 + 2;
                 // 有封面時文字排在封面下方
                 int y = coverRows > 0 ? (coverRow - 1 + coverRows + 1) : 4;
-                canvas.putText(px, y++, ellipsize(info->info.title, term.cols() - px - 1), kWhite);
-                canvas.putText(px, y++, ellipsize(info->info.artist, term.cols() - px - 1), kGray);
-                canvas.putText(px, y++, ellipsize(info->info.version, term.cols() - px - 1), kGold);
+                const int pw = term.cols() - px - 1;  // 詳情面板文字寬（以顯示格數截斷）
+                canvas.putText(px, y++, strutil::ellipsizeDisplay(info->info.title, pw), kWhite);
+                canvas.putText(px, y++, strutil::ellipsizeDisplay(info->info.artist, pw), kGray);
+                canvas.putText(px, y++, strutil::ellipsizeDisplay(info->info.version, pw), kGold);
                 char difbuf[48];
                 std::snprintf(difbuf, sizeof(difbuf), "Q Diff  %.2f", info->quaverDiff);
                 canvas.putText(px, y++, difbuf, kSky);

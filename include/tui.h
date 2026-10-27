@@ -79,8 +79,11 @@ public:
     int pxH() const { return rows_ * 8; }   // 垂直：每格 8 像素
 
     void setPixel(int cx, int py, Rgb color);
-    void fillRect(int cx0, int py0, int cx1, int py1, Rgb color);  // 含端點
-    void putText(int cx, int cy, const std::string& s, Rgb color);  // cy 為格列
+    void fillRect(int cx0, int py0, int cx1, int py1, Rgb color);  // 含端點（像素座標）
+    // 格粒度背景填充（含端點，cy 為格列）：文字格與空格都套用背景色，供選取高亮條用
+    void fillRectBg(int cx0, int cy0, int cx1, int cy1, Rgb color);
+    // UTF-8 感知：解碼逐字元放置，寬字元（CJK）佔 2 格；cy 為格列
+    void putText(int cx, int cy, const std::string& s, Rgb color);
 
     // 保留區（格座標，含端點）：flush 不輸出此範圍，供 kitty 圖片顯示不被覆蓋。
     // 傳入 cx1<cx0 代表清除保留區。
@@ -103,6 +106,8 @@ private:
     std::vector<Rgb> px_;           // 每像素顏色
     std::vector<uint32_t> textCp_;  // 每格文字 codepoint（0 = 無）
     std::vector<Rgb> textColor_;
+    std::vector<uint8_t> bgOn_;     // 每格是否填背景（格粒度，fillRectBg）
+    std::vector<Rgb> bgColor_;
     std::vector<Cell> prev_;        // 上一幀，用於 diff
     int rcx0_ = 0, rcy0_ = 0, rcx1_ = -1, rcy1_ = -1;  // 保留區（cx1<cx0＝無）
 };

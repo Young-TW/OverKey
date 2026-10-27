@@ -17,10 +17,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            g++-14 cmake ninja-build dpkg-dev file \
-            libasound2-dev libx11-dev libxrandr-dev libxi-dev \
-            libxcursor-dev libxinerama-dev libxext-dev \
-            libgl1-mesa-dev libglu1-mesa-dev
+            g++-14 cmake ninja-build dpkg-dev file libasound2-dev
 
       - name: Configure
         run: >

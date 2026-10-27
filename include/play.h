@@ -7,7 +7,7 @@
 
 #include "map.h"
 
-// 判定等級與音符狀態：前端無關，GUI / TUI 共用。
+// 判定等級與音符狀態：前端無關的核心型別。
 enum class Judgment { None, Perfect, Great, Good, Bad, Miss };
 enum class NoteState { Idle, Holding, Done };  // Holding 僅用於長押
 

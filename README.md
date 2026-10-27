@@ -2,9 +2,9 @@
 
 [![CI](https://github.com/Young-TW/OverKey/actions/workflows/ci.yml/badge.svg)](https://github.com/Young-TW/OverKey/actions/workflows/ci.yml)
 
-A falling-rhythm game (osu!mania-style) in C++20, with **two frontends sharing one
-logic core**: a graphical version (raylib) and a terminal version (TUI). Supports
-**4K, 5K, 6K and 7K** mania beatmaps in the `.osu` and `.qua` formats.
+A falling-rhythm game (osu!mania-style) in C++20 that runs **entirely in the
+terminal** (TUI). Supports **4K, 5K, 6K and 7K** mania beatmaps in the `.osu`
+and `.qua` formats.
 
 ```
 選歌（4K–7K 鍵數篩選，hover 試聽副歌）→ 倒數 → 下落遊玩（長押、可調速、聲光）
@@ -13,12 +13,12 @@ logic core**: a graphical version (raylib) and a terminal version (TUI). Support
 
 ## Features
 
-- **Two frontends, one core**: judgment, scoring, timing live in a raylib-free core
-  (`PlaySession` + `SongClock`); the GUI and TUI are thin shells over it.
+- **Terminal-native**: no window, no OpenGL — pure truecolor TUI with a
+  raylib-free logic core (`PlaySession` + `SongClock`) underneath.
 - **4K–7K** mania support: 4K/5K/6K/7K beatmaps (column mapping driven by the
   beatmap's key count), each with its own default and rebindable key layout.
 - **5-tier judgment**: Perfect / Great / Good / Bad / Miss, with combo and accuracy.
-- **Vertical hit-error meter** beside the playfield (both frontends): an
+- **Vertical hit-error meter** beside the playfield: an
   osu-style judgment bar drawn vertically — center line is 0 ms, up = early,
   down = late, bands colored per judgment window. Each hit paints a fading tick
   at its signed offset; a white dash marks the recent average error.
@@ -33,70 +33,55 @@ logic core**: a graphical version (raylib) and a terminal version (TUI). Support
 - **Song select** with metadata panel and **chorus preview** on hover (osu `PreviewTime`),
   plus **live search** (press `/`, type to filter artist/title/difficulty, `Esc` clears).
 - **Key-count filter** (Quaver-style): toggle 4K/5K/6K/7K chips with the number keys
-  `4`–`7` (or click the chips in the GUI) to show only beatmaps of those key counts;
-  at least one key count always stays on.
+  `4`–`7` to show only beatmaps of those key counts; at least one key count always
+  stays on.
 - **Sortable / grouped song list**: press `S` to cycle sort keys — title, difficulty
   (Quaver/osu★), best grade, length, note count — and `Shift+S` to flip the direction.
   The list is grouped with headers (`SS`/`S`/`A`…`UNPLAYED`, `0 - 2 ★`/`2 - 4 ★`…, `A`–`Z`,
   time and note buckets); metrics are computed in a background thread with a progress
   indicator, then **cached to `overkey-cache.txt`** (mtime/size validated) together with
   the sort state, so relaunching doesn't recompute.
-- **Settings** (persisted to `overkey.cfg`, shared by both frontends): audio offset,
+- **Settings** (persisted to `overkey.cfg`): audio offset,
   scroll speed, music/effect volume, per-lane keybinds for 4K, 5K, 6K and 7K.
 - **Result screen**: grade, accuracy, per-tier counts, timing-error histogram, and a
-  suggested offset for calibration. The full stats are persisted with your best score — in
-  the **TUI** song list, press `r` on a map you have played to bring that best run's result
-  screen back up.
+  suggested offset for calibration. The full stats are persisted with your best score —
+  press `r` on a map you have played to bring that best run's result screen back up.
 - **Pause menu** (Resume / Retry / Quit), **quick retry**, **live speed adjust**.
-- GUI: borderless fullscreen via a virtual-resolution render target (letterboxed).
-- TUI: solid eighth-block rendering (rows×8 vertical resolution), Kitty keyboard
+- Solid eighth-block rendering (rows×8 vertical resolution), Kitty keyboard
   protocol for key-release (needed for long notes), synchronized output for smoothness.
 
 ## Download
 
 Prebuilt Linux packages (`.tar.gz` / `.zip` / `.deb`) are attached to each
-[GitHub Release](https://github.com/Young-TW/OverKey/releases). They dynamically link
-X11/OpenGL/ALSA, so a normal desktop Linux has what they need.
+[GitHub Release](https://github.com/Young-TW/OverKey/releases). They only need
+libstdc++/libc; audio is `dlopen`ed at runtime (ALSA/PulseAudio via miniaudio).
 
 ## Build
 
 Requires CMake ≥ 3.20 and a C++20 compiler (GCC ≥ 10 / Clang ≥ 17). All dependencies
-(raylib for the GUI; miniaudio + stb for the TUI; miniz for archive unpacking in the
-shared core) are fetched automatically via `FetchContent` — no system install needed.
+(miniaudio + stb for audio/image; miniz for archive unpacking in the core) are fetched
+automatically via `FetchContent` — no system install needed.
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ```
 
-Produces two executables in `build/`:
+Produces one executable in `build/`:
 
-- `OverKey` — graphical (raylib) frontend
-- `overkey-tui` — terminal frontend
+- `overkey-tui` — the game
 
-The two frontends can be built separately with the `OVERKEY_BUILD_GUI` /
-`OVERKEY_BUILD_TUI` options (both `ON` by default):
-
-```bash
-cmake -S . -B build -DOVERKEY_BUILD_GUI=OFF   # TUI only
-cmake -S . -B build -DOVERKEY_BUILD_TUI=OFF   # GUI only
-```
-
-The **GUI** depends on raylib (window/graphics/audio), which needs OpenGL and
-X11 to build. The **TUI** is fully headless: its audio comes from
-[miniaudio](https://github.com/mackron/miniaudio) and its image handling (for
-the Kitty cover art) from [stb](https://github.com/nothings/stb), so a
-`-DOVERKEY_BUILD_GUI=OFF` build has **no OpenGL / X11 / raylib dependency** and
-compiles on headless machines (e.g. compute clusters). Both fetch their
-dependencies automatically; a C++20 compiler (GCC ≥ 10 / Clang ≥ 17) is
-required either way.
+The build is fully headless: audio comes from
+[miniaudio](https://github.com/mackron/miniaudio) and image handling (for the Kitty
+cover art) from [stb](https://github.com/nothings/stb), so there is
+**no OpenGL / X11 / windowing dependency** and it compiles on headless machines
+(e.g. compute clusters).
 
 ## Run
 
 ```bash
-./build/OverKey            # scans ./maps
-./build/OverKey /path/to/maps
-./build/overkey-tui        # terminal version (needs kitty/ghostty — see below)
+./build/overkey-tui         # scans ./maps (needs kitty/ghostty — see below)
+./build/overkey-tui /path/to/maps
 ```
 
 ### Maps
@@ -156,24 +141,23 @@ If your npm blocks install scripts and `require("realm")` fails afterwards, run
 
 ### Controls
 
-| | GUI | TUI |
-|---|---|---|
-| Lanes (7K default) | `S D F Space J K L` | same |
-| Lanes (6K default) | `S D F J K L` | same |
-| Lanes (5K default) | `D F Space J K` | same |
-| Lanes (4K default) | `D F J K` | same |
-| Pause | `Esc` | `Esc` |
-| Quick retry | `` ` `` / `~` | `` ` `` / `~` |
-| Scroll speed | `3` slower / `4` faster (also F3/F4) | `3` / `4` |
-| Settings (from menu) | `Tab` | `Tab` |
-| Fullscreen toggle (GUI) | `F11` | — |
-| Search maps (in menu) | `/`, Esc clears | `/`, Esc clears |
-| Key-count filter (in menu) | `4` `5` `6` `7` or click chips | `4` `5` `6` `7` |
-| Sort/group songs | `S` key, `Shift+S` order | `s` key, `S` order |
-| View best-run result (in menu) | — | `r` |
-| Menu navigate | `↑ ↓`, Enter, Esc | `↑↓` or `j k`, Enter, `q` |
+| | |
+|---|---|
+| Lanes (7K default) | `S D F Space J K L` |
+| Lanes (6K default) | `S D F J K L` |
+| Lanes (5K default) | `D F Space J K` |
+| Lanes (4K default) | `D F J K` |
+| Pause | `Esc` |
+| Quick retry | `` ` `` / `~` |
+| Scroll speed | `3` slower / `4` faster |
+| Settings (from menu) | `Tab` |
+| Search maps (in menu) | `/`, Esc clears |
+| Key-count filter (in menu) | `4` `5` `6` `7` |
+| Sort/group songs | `s` key, `S` order |
+| View best-run result (in menu) | `r` |
+| Menu navigate | `↑↓` or `j k`, Enter, `q` |
 
-The **TUI requires a terminal that supports the Kitty keyboard protocol** (kitty,
+**Requires a terminal that supports the Kitty keyboard protocol** (kitty,
 ghostty, …) — key-release events are needed to judge long notes. High-refresh terminals
 give the smoothest scrolling.
 
@@ -185,23 +169,21 @@ offset. Set it under `Tab → Audio offset` so judgment lines up with the music.
 ## Architecture
 
 ```
-include/play.h, src/play.cpp     core: PlaySession, SongClock, Judgment (no raylib)
+include/play.h, src/play.cpp     core: PlaySession, SongClock, Judgment
 include/map.h,  src/map.cpp       .osu parsing: loadBeatmap / loadBeatmapInfo / probeBeatmap
 include/library.h, src/library.cpp  song-list sort keys, group buckets, metric loading
 include/metric_cache.h, src/metric_cache.cpp  menu state + sort/difficulty metrics disk cache
 include/map_import.h, src/map_import.cpp  background .osz/.qp unpacker (MapImporter, miniz)
-include/settings.*                Settings struct + load/save + GUI settings screen
-include/game.h, src/game.cpp      GUI frontend over PlaySession
-src/song_select.cpp, src/main.cpp GUI menu + entry point
+include/settings.*                Settings struct + load/save
 include/tui.h, src/tui.cpp        terminal layer: raw mode, Kitty input, eighth-block canvas
-src/tui_main.cpp                  TUI frontend (menu, gameplay, settings, result)
-include/render.h                  GUI virtual-resolution viewport
-include/raii.h                    RAII wrappers for raylib window/audio/textures
-tests/test_core.cpp               unit tests for the raylib-free core
+src/tui_main.cpp                  the game (menu, gameplay, settings, result)
+include/rl_compat.h, src/rl_compat.cpp  raylib-compatible audio/image shim (miniaudio + stb)
+include/raii.h                    RAII wrappers for music/sound resources
+tests/test_core.cpp               unit tests for the logic core
 tools/map-import/                 Node tool: import osu!(lazer) + Quaver libraries into maps/
 ```
 
-CMake builds an `overkey_core` static library shared by both executables.
+CMake builds an `overkey_core` static library linked into the `overkey-tui` executable.
 
 ## Tests
 

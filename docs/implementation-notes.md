@@ -3,7 +3,7 @@
 Hard-won fixes and design decisions in OverKey — the non-obvious things that
 took real debugging, kept here so they aren't rediscovered.
 
-## Smooth scrolling (both frontends)
+## Smooth scrolling
 
 - **Don't drive the note clock from `GetMusicTimePlayed()`.** The audio position
   only advances in ~75 ms buffer chunks, so notes visibly stutter even at high
@@ -45,8 +45,7 @@ took real debugging, kept here so they aren't rediscovered.
   escapes) + flag 2 (event types) are required to get key **release** events for
   plain letters, which long notes need.
 - Kitty reports letters as lowercase codepoints; normalize to lowercase when
-  matching against `Settings` (which store letter binds uppercase, to match the
-  GUI's raylib keycodes).
+  matching against `Settings` (which store letter binds uppercase).
 
 ## Asynchronous loading — the big one
 
@@ -86,23 +85,24 @@ Two things the TUI main loop must therefore never do:
 suspect main-thread work in the *adopt* step (seek / unload / large write), not
 the load itself.
 
-## Headless TUI — raylib-free build (`OVERKEY_HEADLESS`)
+## Headless build — raylib-free audio/image (`OVERKEY_HEADLESS`)
 
-The TUI used raylib only for **audio** (music + hit sounds) and **image**
-handling (Kitty cover art / round-note PNGs). But raylib's CMake always builds
-its full GLFW/OpenGL/X11 stack, so even a "TUI only" build failed on headless
-machines (`OPENGL_INCLUDE_DIR NOTFOUND` on a compute cluster).
+The game needs **audio** (music + hit sounds) and **image** handling (Kitty
+cover art / round-note PNGs) without any windowing stack. An earlier
+raylib-based build failed on headless machines (`OPENGL_INCLUDE_DIR NOTFOUND`
+on a compute cluster) because raylib's CMake always builds its full
+GLFW/OpenGL/X11 stack. (Note: the old raylib GUI frontend has since been
+removed entirely; the TUI is the only frontend.)
 
 Fix: a small raylib-compatible shim (`include/rl_compat.h` + `src/rl_compat.cpp`)
-that reimplements exactly the raylib audio/image API the TUI uses, over
+that reimplements exactly the raylib audio/image API the game uses, over
 [miniaudio](https://github.com/mackron/miniaudio) (audio) and
 [stb](https://github.com/nothings/stb) (`stb_image` / `stb_image_write` /
 `stb_image_resize2`, plus `stb_vorbis` for Ogg, which miniaudio doesn't bundle).
-Types/signatures match raylib so `tui_main.cpp` only changes its `#include`.
-When `OVERKEY_HEADLESS` is defined, `raii.h` pulls the shim instead of
-`<raylib.h>` and compiles out the window/texture wrappers. The TUI target links
-**no raylib** — its binary needs only libstdc++/m/c (ALSA/PulseAudio are
-`dlopen`ed by miniaudio at runtime).
+Types/signatures match raylib so the calling code barely changes. With
+`OVERKEY_HEADLESS` defined, `raii.h` pulls the shim (it is the only build mode
+now). The binary needs only libstdc++/m/c (ALSA/PulseAudio are `dlopen`ed by
+miniaudio at runtime).
 
 **Bonus:** the shim **fully decodes** each track to PCM up front (mp3/wav/flac
 via `ma_decoder`, ogg via stb_vorbis) and plays it through a `ma_audio_buffer` on
@@ -138,15 +138,7 @@ osu!/Quaver feel accurate untouched.
     implementation region; declaration-only TUs must duplicate the small ABI
     structs locally.
 
-## raylib input polling (GUI)
+## Music stop/retry quirk
 
-raylib polls input inside `EndDrawing()` (our `vp.end()`).
-
-- **Never `continue` past `EndDrawing`** in the game loop: input state never
-  refreshes, so the triggering key reads as "just pressed" every frame — this
-  made Esc appear dead and `~` quick-retry freeze in an infinite restart loop.
-- **Don't `return` to the menu mid-frame:** the confirming Enter goes
-  unconsumed and the next screen sees it as a fresh press (Quit replayed the
-  song). Return via a flag *after* `vp.end()`.
-- `StopMusicStream` on a **paused** stream doesn't rewind — `ResumeMusicStream`
-  first, then stop, so retry restarts audio from 0.
+`StopMusicStream` on a **paused** stream doesn't rewind — resume first, then
+stop, so retry restarts audio from 0.

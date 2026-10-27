@@ -10,7 +10,7 @@
 
 // 選單狀態 + 排序指標的磁碟快取（overkey-cache.txt）：排序鍵／方向，與每張譜面已算好
 // 的摘要（BeatmapInfo）和難度（QSS／osu★）。難度要整張解析 + QSS，啟動重算很貴，這裡
-// 以 mtime + size 驗證快取，檔案變動才重算。純邏輯、無 raylib 依賴，GUI/TUI 共用。
+// 以 mtime + size 驗證快取，檔案變動才重算。純邏輯、無圖形/音訊依賴。
 //
 // 檔案格式（tab 分隔，path 壓最後可含 tab 以外的任意字元）：
 //   sort \t key \t asc

@@ -1,7 +1,7 @@
 #ifndef PP_H
 #define PP_H
 
-// osu!mania pp 與 Quaver rating 估算（純邏輯，無 raylib 依賴，GUI / TUI 共用）。
+// osu!mania pp 與 Quaver rating 估算（純邏輯，無圖形/音訊依賴）。
 //
 // 演算法來源（皆為官方開源實作的忠實移植）：
 //  - Quaver 難度：Quaver.API「QSS」DifficultyProcessorKeys v0.0.5（伺服器/客戶端同款，

@@ -8,7 +8,7 @@
 #include "map.h"
 #include "scores.h"
 
-// 選歌清單的排序 / 分組（群組標頭）邏輯：純邏輯、無 raylib 依賴，GUI 與 TUI 共用。
+// 選歌清單的排序 / 分組（群組標頭）邏輯：純邏輯、無圖形/音訊依賴。
 //
 // 運作方式：
 //  - 前端持有每張譜面的 MapMetrics（延遲載入、快取於 Entry 內）。
@@ -55,7 +55,7 @@ bool sortRowLess(SortKey k, bool asc, const SortRow& a, const SortRow& b);
 // 群組標頭名稱：同排序鍵下相鄰同名視同組（如 "SS"、"2 - 4 ★"、"UNPLAYED"、"#"）。
 std::string groupName(SortKey k, const SortRow& row);
 
-// ---- 鍵數篩選器（4K–7K 各一個開關，bitmask；GUI 與 TUI 選單共用）----
+// ---- 鍵數篩選器（4K–7K 各一個開關，bitmask；選單用）----
 // bit k 代表 kK 顯示與否；kKeyFilterMin..kKeyFilterMax 以外不屬支援範圍。
 inline constexpr int kKeyFilterMin = 4;
 inline constexpr int kKeyFilterMax = 7;

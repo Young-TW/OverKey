@@ -11,17 +11,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # raylib（經 FetchContent 建置）所需的開發套件；g++-14 提供 C++23 <print>
+      # 無頭建置：不需要 X11/OpenGL；ALSA 標頭供 miniaudio 的 dlopen 後端
       - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            g++-14 cmake ninja-build \
-            libasound2-dev libx11-dev libxrandr-dev libxi-dev \
-            libxcursor-dev libxinerama-dev libxext-dev \
-            libgl1-mesa-dev libglu1-mesa-dev
+            g++-14 cmake ninja-build libasound2-dev
 
-      - name: Cache raylib build
+      - name: Cache FetchContent deps
         uses: actions/cache@v4
         with:
           path: build/_deps

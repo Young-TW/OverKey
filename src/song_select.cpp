@@ -43,8 +43,10 @@ Rectangle keyChipRect(int idx) {  // idx 0..3 → 4K..7K
 constexpr KeyboardKey kChipKeys[] = {KEY_FOUR, KEY_FIVE, KEY_SIX, KEY_SEVEN};
 }  // namespace
 
-SongSelect::SongSelect(std::filesystem::path mapsDir)
-    : mapsDir_(std::move(mapsDir)), importer_(mapsDir_) {
+SongSelect::SongSelect(std::filesystem::path mapsDir, MenuCache& cache)
+    : mapsDir_(std::move(mapsDir)), cache_(cache), importer_(mapsDir_) {
+    sortKey_ = static_cast<SortKey>(cache_.sortKey());  // setSort 已夾限
+    sortAsc_ = cache_.sortAsc();
     std::error_code ec;
     if (std::filesystem::is_directory(mapsDir_, ec)) {
         for (auto it = std::filesystem::recursive_directory_iterator(
@@ -58,7 +60,10 @@ SongSelect::SongSelect(std::filesystem::path mapsDir)
     importer_.start();  // 開背景執行緒掃描/解壓 .osz/.qp，執行期間增量餵進清單
 }
 
-SongSelect::~SongSelect() { stopMetricLoad(); }
+SongSelect::~SongSelect() {
+    stopMetricLoad();
+    cache_.save();  // 排序狀態／新算好的指標落碟（無變更時 no-op）
+}
 
 bool SongSelect::makeEntry(const std::filesystem::path& p, Entry& out) const {
     if (p.extension() != ".osu" && p.extension() != ".qua") return false;
@@ -68,6 +73,7 @@ bool SongSelect::makeEntry(const std::filesystem::path& p, Entry& out) const {
     std::string label = h.label();
     if (label.empty()) label = p.lexically_relative(mapsDir_).replace_extension("").string();
     out = Entry{p, std::move(label), {}, h.keyCount};
+    cache_.apply(p, out.metrics);  // 快取有的摘要／難度直接補上，背景就不必重算
     return true;
 }
 
@@ -235,6 +241,7 @@ bool SongSelect::drainMetricResults() {
             it->metrics.quaverDiff = m.quaverDiff;
             it->metrics.osuStar = m.osuStar;
         }
+        cache_.store(path, it->metrics);  // 算好的指標留給下次啟動
     }
     return true;
 }
@@ -267,7 +274,10 @@ MenuResult SongSelect::run(Viewport& vp, float musicVolume, const ScoreBook& sco
         if (IsKeyPressed(KEY_F11)) ToggleBorderlessWindowed();
 
         // 背景指標計算：序列到貨就併入並重排；全齊後視需要開新一輪
-        if (drainMetricResults()) rebuildView(selectedPath());
+        if (drainMetricResults()) {
+            rebuildView(selectedPath());
+            if (!metricRunning_) cache_.save();  // 整批收成完落碟（無變更時 no-op）
+        }
         if ((sortNeedsInfo(sortKey_) || sortNeedsDiff(sortKey_)) && !metricRunning_ &&
             metricTotal_ == 0)
             startMetricLoad();
@@ -321,6 +331,7 @@ MenuResult SongSelect::run(Viewport& vp, float musicVolume, const ScoreBook& sco
                     sortKey_ = nextSortKey(sortKey_);
                     stopMetricLoad();  // 換鍵 → 以新需求重開背景計算
                 }
+                cache_.setSort(static_cast<int>(sortKey_), sortAsc_);  // 跨啟動保留
                 rebuildView(selectedPath());
             }
             for (int i = 0; i <= kKeyFilterMax - kKeyFilterMin; ++i)  // 數字鍵切換鍵數篩選
@@ -432,7 +443,10 @@ void SongSelect::ensureSelectedInfo() {
     const Row& r = rows_[selected_];
     if (r.isHeader()) return;
     Entry& e = entries_[r.entry];
-    if (!e.metrics.info || !e.metrics.quaverDiff) loadMetrics(e.path, e.metrics, true);
+    if (!e.metrics.info || !e.metrics.quaverDiff) {
+        loadMetrics(e.path, e.metrics, true);
+        cache_.store(e.path, e.metrics);  // hover 補算的也留給下次啟動
+    }
 }
 
 void SongSelect::draw() const {

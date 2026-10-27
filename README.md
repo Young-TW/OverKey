@@ -39,7 +39,8 @@ logic core**: a graphical version (raylib) and a terminal version (TUI). Support
   (Quaver/osu★), best grade, length, note count — and `Shift+S` to flip the direction.
   The list is grouped with headers (`SS`/`S`/`A`…`UNPLAYED`, `0 - 2 ★`/`2 - 4 ★`…, `A`–`Z`,
   time and note buckets); metrics are computed in a background thread with a progress
-  indicator.
+  indicator, then **cached to `overkey-cache.txt`** (mtime/size validated) together with
+  the sort state, so relaunching doesn't recompute.
 - **Settings** (persisted to `overkey.cfg`, shared by both frontends): audio offset,
   scroll speed, music/effect volume, per-lane keybinds for 4K, 5K, 6K and 7K.
 - **Result screen**: grade, accuracy, per-tier counts, timing-error histogram, and a
@@ -187,6 +188,7 @@ offset. Set it under `Tab → Audio offset` so judgment lines up with the music.
 include/play.h, src/play.cpp     core: PlaySession, SongClock, Judgment (no raylib)
 include/map.h,  src/map.cpp       .osu parsing: loadBeatmap / loadBeatmapInfo / probeBeatmap
 include/library.h, src/library.cpp  song-list sort keys, group buckets, metric loading
+include/metric_cache.h, src/metric_cache.cpp  menu state + sort/difficulty metrics disk cache
 include/map_import.h, src/map_import.cpp  background .osz/.qp unpacker (MapImporter, miniz)
 include/settings.*                Settings struct + load/save + GUI settings screen
 include/game.h, src/game.cpp      GUI frontend over PlaySession

@@ -5,6 +5,7 @@
 
 #include "game.h"
 #include "map.h"
+#include "metric_cache.h"
 #include "raii.h"
 #include "render.h"
 #include "scores.h"
@@ -14,6 +15,7 @@
 namespace {
 const char* kConfigFile = "overkey.cfg";
 const char* kScoresFile = "overkey-scores.txt";
+const char* kCacheFile = "overkey-cache.txt";
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -27,7 +29,8 @@ int main(int argc, char* argv[]) {
     Viewport viewport;  // 固定虛擬解析度，縮放置中到實際螢幕
     Settings settings = loadSettings(kConfigFile);
     ScoreBook scores{kScoresFile};
-    SongSelect menu{mapsDir};
+    MenuCache cache{kCacheFile};  // 排序狀態 + 已算好的摘要/難度（mtime/size 驗證）
+    SongSelect menu{mapsDir, cache};
 
     bool autoPlay = false;
     float rate = 1.0f;  // rate mod（暫時性，不存檔，每次啟動為 1.0x）

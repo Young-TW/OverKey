@@ -54,6 +54,7 @@ add_library(overkey_core STATIC
     src/map_import.cpp
     src/pp.cpp
     src/library.cpp
+    src/metric_cache.cpp
 )
 target_include_directories(overkey_core PUBLIC ./include)
 # map_import 需要 std::thread；miniz 供 zip 解壓（僅 core 內部用，故 PRIVATE）。

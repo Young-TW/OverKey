@@ -13,6 +13,7 @@
 #include "library.h"
 #include "map.h"
 #include "map_import.h"
+#include "metric_cache.h"
 #include "scores.h"
 
 class Viewport;
@@ -27,8 +28,9 @@ struct MenuResult {
 // 掃描 maps/ 目錄並提供選歌畫面。假設視窗已由外層開啟。
 class SongSelect {
 public:
-    explicit SongSelect(std::filesystem::path mapsDir);
-    ~SongSelect();  // 停止背景指標計算執行緒
+    // cache 由呼叫端持有（壽命須長於本物件）：套用已算好的指標，排序狀態寫回由它持久化
+    SongSelect(std::filesystem::path mapsDir, MenuCache& cache);
+    ~SongSelect();  // 停止背景指標計算執行緒並存回快取
 
     // 跑選單迴圈：Enter→Play、Tab→Settings、Esc/關窗→Quit。
     // musicVolume 用於 hover 副歌試聽；scores 用於詳情面板顯示最佳成績與等第排序。
@@ -65,6 +67,7 @@ private:
     bool drainMetricResults();  // 回傳是否有新結果併入
 
     std::filesystem::path mapsDir_;
+    MenuCache& cache_;      // 選單狀態／排序指標的磁碟快取（外部持有）
     MapImporter importer_;  // 背景解壓 .osz/.qp
     std::vector<Entry> entries_;
     std::vector<Row> rows_;          // 排序 + 篩選 + 分組後的顯示列
@@ -74,7 +77,7 @@ private:
     int scroll_ = 0;
     std::string query_;              // 搜尋關鍵字（即時子字串篩選清單）
     bool searching_ = false;         // 搜尋輸入模式（/ 進入，Esc 清除離開）
-    SortKey sortKey_ = SortKey::Title;  // 目前排序／分組鍵（S 切換）
+    SortKey sortKey_ = SortKey::Title;  // 目前排序／分組鍵（S 切換；建構時由快取還原）
     bool sortAsc_ = true;               // 排序方向（Shift+S 反轉）
     int keyFilter_ = kKeyFilterAll;     // 鍵數篩選 bitmask（數字鍵 4–7 / 點晶片切換）
     bool autoPlay_ = false;  // 供 draw() 顯示指示器

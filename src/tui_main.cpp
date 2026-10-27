@@ -22,6 +22,7 @@
 #include "library.h"
 #include "map.h"
 #include "map_import.h"
+#include "metric_cache.h"
 #include "play.h"
 #include "raii.h"
 #include "scores.h"
@@ -47,6 +48,7 @@ namespace {
 
 constexpr const char* kConfigFile = "overkey.cfg";
 constexpr const char* kScoresFile = "overkey-scores.txt";
+constexpr const char* kCacheFile = "overkey-cache.txt";
 constexpr double kSkipLeadMs = 2000.0;  // 跳過前奏後落在第一個音符前多少 ms
 constexpr double kMinIntroMs = 3000.0;  // 前奏長於此才可跳過
 constexpr double kLeadInMs = 2000.0;
@@ -405,18 +407,20 @@ struct MenuRow {
     std::string header;
 };
 
-// 探測單一譜面檔；支援（mania 4K–7K）則填入 out 回傳 true。
-bool tryMakeEntry(const fs::path& dir, const fs::path& p, Entry& out) {
+// 探測單一譜面檔；支援（mania 4K–7K）則填入 out 回傳 true。指標優先套磁碟快取。
+bool tryMakeEntry(const fs::path& dir, const fs::path& p, const MenuCache& cache,
+                  Entry& out) {
     if (p.extension() != ".osu" && p.extension() != ".qua") return false;
     const BeatmapHeader h = probeBeatmap(p);
     if (!h.isSupported()) return false;
     std::string label = h.label();
     if (label.empty()) label = p.lexically_relative(dir).replace_extension("").string();
     out = Entry{p, std::move(label), {}, h.keyCount};
+    cache.apply(p, out.metrics);  // 快取有的摘要／難度直接補上，背景就不必重算
     return true;
 }
 
-std::vector<Entry> scanMaps(const fs::path& dir) {
+std::vector<Entry> scanMaps(const fs::path& dir, const MenuCache& cache) {
     std::vector<Entry> out;
     std::error_code ec;
     if (!fs::is_directory(dir, ec)) return out;
@@ -424,7 +428,7 @@ std::vector<Entry> scanMaps(const fs::path& dir) {
              dir, fs::directory_options::skip_permission_denied, ec);
          !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
         Entry e;
-        if (tryMakeEntry(dir, it->path(), e)) out.push_back(std::move(e));
+        if (tryMakeEntry(dir, it->path(), cache, e)) out.push_back(std::move(e));
     }
     std::sort(out.begin(), out.end(),
               [](const Entry& a, const Entry& b) { return a.label < b.label; });
@@ -433,7 +437,7 @@ std::vector<Entry> scanMaps(const fs::path& dir) {
 
 // 撈背景匯入器新解出的譜面插進清單（保留目前選取項），供選單迴圈每幀呼叫。
 void ingestNewMaps(MapImporter& importer, const fs::path& dir, std::vector<Entry>& entries,
-                   int& selected) {
+                   int& selected, const MenuCache& cache) {
     std::vector<fs::path> fresh = importer.drainNewMaps();
     if (fresh.empty()) return;
     const fs::path selPath = entries.empty() ? fs::path{} : entries[selected].path;
@@ -442,7 +446,7 @@ void ingestNewMaps(MapImporter& importer, const fs::path& dir, std::vector<Entry
                         [&](const Entry& e) { return e.path == p; }))
             continue;
         Entry e;
-        if (tryMakeEntry(dir, p, e)) entries.push_back(std::move(e));
+        if (tryMakeEntry(dir, p, cache, e)) entries.push_back(std::move(e));
     }
     std::sort(entries.begin(), entries.end(),
               [](const Entry& a, const Entry& b) { return a.label < b.label; });
@@ -715,7 +719,8 @@ struct MenuInfo {
 // sortKey/sortAsc 由呼叫端持有，跨場次保留排序/分組狀態
 int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float musicVolume,
             float rate, bool autoPlay, const ScoreBook& scores, MapImporter& importer,
-            const fs::path& mapsDir, SortKey& sortKey, bool& sortAsc, int& keyFilter) {
+            const fs::path& mapsDir, SortKey& sortKey, bool& sortAsc, int& keyFilter,
+            MenuCache& cache) {
     PixelCanvas canvas(term.cols(), term.rows());
     std::string out;
     Loader loader;  // 常駐背景載入執行緒
@@ -811,9 +816,11 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
     int metricTotal = 0;
     bool metricScanning = false;
 
-    // 離開選單前刪除 kitty 圖片，避免殘留到遊玩畫面
+    // 離開選單：排序狀態與已算好的指標寫回磁碟快取（無變更時 save 為 no-op）
     auto leave = [&](int r) {
         *metricStop = true;
+        cache.setSort(static_cast<int>(sortKey), sortAsc);
+        cache.save();
         if (!coverPath.empty()) term.write(kKittyDeleteAll);
         return r;
     };
@@ -831,7 +838,8 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
         if (canvas.cols() != term.cols() || canvas.rows() != term.rows())
             canvas.resize(term.cols(), term.rows());
 
-        ingestNewMaps(importer, mapsDir, entries, selected);  // 背景解壓的新譜面即時進清單
+        ingestNewMaps(importer, mapsDir, entries, selected,
+                      cache);  // 背景解壓的新譜面即時進清單
         if (filterDirty || entries.size() != lastCount) refilter();
 
         for (const KeyEvent& e : term.poll()) {
@@ -932,6 +940,7 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
                     jt->metrics.quaverDiff = m.quaverDiff;
                     jt->metrics.osuStar = m.osuStar;
                 }
+                cache.store(path, jt->metrics);  // 算好的指標留給下次啟動
                 merged = true;
             }
             if (metricJobs.empty()) metricScanning = false;
@@ -2009,7 +2018,8 @@ int main(int argc, char* argv[]) {
     const fs::path mapsDir = (argc > 1) ? argv[1] : "maps";
     Settings settings = loadSettings(kConfigFile);
     ScoreBook scores{kScoresFile};
-    std::vector<Entry> entries = scanMaps(mapsDir);
+    MenuCache cache{kCacheFile};  // 排序狀態 + 已算好的摘要/難度（mtime/size 驗證）
+    std::vector<Entry> entries = scanMaps(mapsDir, cache);
     MapImporter importer{mapsDir};  // 背景解壓 .osz/.qp，選單執行期間增量餵進 entries
     importer.start();
 
@@ -2023,13 +2033,14 @@ int main(int argc, char* argv[]) {
         int selected = 0;
         float rate = 1.0f;  // rate mod（暫時性，不存檔，每次啟動為 1.0x）
         bool autoPlay = false;
-        SortKey sortKey = SortKey::Title;  // 排序／分組狀態（跨場次保留，不存檔）
-        bool sortAsc = true;
+        // 排序／分組狀態：跨場次保留，並經由 overkey-cache.txt 跨啟動保留
+        SortKey sortKey = static_cast<SortKey>(cache.sortKey());
+        bool sortAsc = cache.sortAsc();
         int keyFilter = kKeyFilterAll;     // 鍵數篩選狀態（跨場次保留，不存檔）
         while (true) {
             const int choice = runMenu(term, entries, selected, settings.musicVolume, rate,
                                        autoPlay, scores, importer, mapsDir, sortKey, sortAsc,
-                                       keyFilter);
+                                       keyFilter, cache);
             if (choice == kMenuQuit) break;
             if (choice == kMenuSettings) {
                 runSettings(term, settings);

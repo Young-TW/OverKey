@@ -192,11 +192,31 @@ constexpr uint8_t kDigitFont[10][5] = {
     {0b111, 0b101, 0b111, 0b001, 0b111},  // 9
 };
 
-// 以色塊字元畫出放大數字：cx 為水平中心（格），cyPx 為垂直中心（像素）。
-// 每個字形點放大為 nx 格寬 × ny 像素高（ny=8＝一格高）。
-void drawBigDigits(PixelCanvas& canvas, int value, int cx, int cyPx, Rgb color,
-                   int nx = 2, int ny = 8) {
-    std::string s = std::to_string(value);
+// 大字母點陣（3x5）：結算評級（SS/S/A/B/C/D）用
+constexpr uint8_t kLetterFont[5][5] = {
+    {0b111, 0b100, 0b111, 0b001, 0b111},  // S
+    {0b010, 0b101, 0b111, 0b101, 0b101},  // A
+    {0b110, 0b101, 0b110, 0b101, 0b110},  // B
+    {0b011, 0b100, 0b100, 0b100, 0b011},  // C
+    {0b110, 0b101, 0b101, 0b101, 0b110},  // D
+};
+
+const uint8_t* bigGlyphOf(char c) {
+    if (c >= '0' && c <= '9') return kDigitFont[c - '0'];
+    switch (c) {
+        case 'S': return kLetterFont[0];
+        case 'A': return kLetterFont[1];
+        case 'B': return kLetterFont[2];
+        case 'C': return kLetterFont[3];
+        case 'D': return kLetterFont[4];
+        default: return nullptr;
+    }
+}
+
+// 以色塊字元畫出放大文字（數字 + 評級字母）：cx 為水平中心（格），cyPx 為垂直中心
+// （像素）。每個字形點放大為 nx 格寬 × ny 像素高（ny=8＝一格高）。
+void drawBigText(PixelCanvas& canvas, std::string s, int cx, int cyPx, Rgb color,
+                 int nx = 2, int ny = 8) {
     if (s.size() > 6) s.resize(6);  // 避免超出版面
     const int glyphW = 3 * nx;
     const int gap = nx;
@@ -204,7 +224,8 @@ void drawBigDigits(PixelCanvas& canvas, int value, int cx, int cyPx, Rgb color,
     const int x0 = cx - totalW / 2;
     const int y0 = cyPx - (5 * ny) / 2;
     for (std::size_t d = 0; d < s.size(); ++d) {
-        const uint8_t* glyph = kDigitFont[s[d] - '0'];
+        const uint8_t* glyph = bigGlyphOf(s[d]);
+        if (!glyph) return;  // 非預期字元整個不畫（評級只會是 SABCD）
         const int dx = x0 + (int)d * (glyphW + gap);
         for (int row = 0; row < 5; ++row)
             for (int col = 0; col < 3; ++col)
@@ -213,6 +234,19 @@ void drawBigDigits(PixelCanvas& canvas, int value, int cx, int cyPx, Rgb color,
                                     dx + col * nx + nx - 1, y0 + row * ny + ny - 1,
                                     color);
     }
+}
+
+void drawBigDigits(PixelCanvas& canvas, int value, int cx, int cyPx, Rgb color,
+                   int nx = 2, int ny = 8) {
+    drawBigText(canvas, std::to_string(value), cx, cyPx, color, nx, ny);
+}
+
+// 評級配色（同 GUI）：SS/S 金、A 綠、D 紅、B/C 天藍
+Rgb gradeRgb(const char* g) {
+    if (g[0] == 'S') return kGold;
+    if (g[0] == 'A') return {0, 228, 48};
+    if (g[0] == 'D') return {230, 41, 55};
+    return kSky;
 }
 
 int normKey(int k) { return (k >= 'A' && k <= 'Z') ? k + 32 : k; }
@@ -1556,52 +1590,108 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
         } else {
             // 結算
             const int cx = term.cols() / 2;
-            canvas.putText(cx - 3, 2, "RESULT", kWhite);
-            canvas.putText(cx - 1, 4, session.grade(), kGold);
-            char buf[64];
-            int y = 6;
-            std::snprintf(buf, sizeof(buf), "ACCURACY  %.2f%%", session.accuracy());
-            canvas.putText(cx - 12, y++, buf, kWhite);
-            std::snprintf(buf, sizeof(buf), "SCORE     %d", session.score());
-            canvas.putText(cx - 12, y++, buf, kWhite);
-            std::snprintf(buf, sizeof(buf), "MAX COMBO %d", session.maxCombo());
-            canvas.putText(cx - 12, y++, buf, kGold);
+            canvas.putText(cx - 3, 1, "RESULT", kWhite);
+            {  // 譜面標題（對齊 GUI；CJK 已有寬字元排版）
+                const std::string& ttl = map.title.empty() ? entry.label : map.title;
+                const std::string t = strutil::ellipsizeDisplay(ttl, term.cols() - 12);
+                canvas.putText(cx - strutil::displayWidth(t) / 2, 2, t, kGray);
+            }
+
+            // 大評級（色塊字，佔 4..8 列）：終端太矮時退回一般文字
+            const bool big = term.rows() >= 20;
+            const char* g = session.grade();
+            if (big) {
+                drawBigText(canvas, g, cx, 4 * 8 + 20, gradeRgb(g));  // 佔 4..8 列
+            } else {
+                canvas.putText(cx - (int)std::strlen(g) / 2, 4, g, gradeRgb(g));
+            }
+
             // Quaver 難度在開局時已算好（與 HUD 即時計數器同源）；此處只重估最終成績
             const RatingEstimate ratingEst = estimateRatings(quaverDiff, session);
-            std::snprintf(buf, sizeof(buf), "QUAVER DIFF %.2f", ratingEst.quaverDiff);
-            canvas.putText(cx - 12, y++, buf, kWhite);
-            std::snprintf(buf, sizeof(buf), "QUAVER RATING %.2f", ratingEst.quaverRating);
-            canvas.putText(cx - 12, y++, buf, kWhite);
-            std::snprintf(buf, sizeof(buf), "OSU STAR %.2f★", ratingEst.osuStar);
-            canvas.putText(cx - 12, y++, buf, kWhite);
-            std::snprintf(buf, sizeof(buf), "OSU PP %.2f", ratingEst.osuPP);
-            canvas.putText(cx - 12, y++, buf, kWhite);
-            ++y;
+            // 左欄：總體數據（同 GUI 的標籤與配色）
+            char buf[64];
+            const int statsTop = big ? 10 : 6;
+            const int lx = std::max(1, cx - 22);
+            int ly = statsTop;
+            auto stat = [&](const char* label, const char* fmt, auto v, Rgb c) {
+                std::snprintf(buf, sizeof(buf), "%-13s", label);
+                canvas.putText(lx, ly, buf, kGray);
+                std::snprintf(buf, sizeof(buf), fmt, v);
+                canvas.putText(lx + 13, ly++, buf, c);
+            };
+            stat("ACCURACY", "%.2f%%", session.accuracy(), kWhite);
+            stat("SCORE", "%d", session.score(), kWhite);
+            stat("MAX COMBO", "%d", session.maxCombo(), kGold);
+            stat("QUAVER DIFF", "%.2f", ratingEst.quaverDiff, kWhite);
+            stat("QUAVER RATING", "%.2f", ratingEst.quaverRating, kPurple);
+            stat("OSU STAR", "%.2f\xE2\x98\x85", ratingEst.osuStar, kWhite);
+            stat("OSU PP", "%.2f", ratingEst.osuPP, kGold);
+
+            // 右欄：各判定等級次數（依判定著色）
             const Judgment tiers[] = {Judgment::Perfect, Judgment::Great, Judgment::Good,
                                       Judgment::Bad, Judgment::Miss};
+            const int rx = std::min(term.cols() - 14, cx + 4);
+            int ry = statsTop;
             for (Judgment t : tiers) {
                 std::snprintf(buf, sizeof(buf), "%-8s %d", judgeName(t), session.count(t));
-                canvas.putText(cx - 12, y++, buf, judgeRgb(t));
+                canvas.putText(rx, ry++, buf, judgeRgb(t));
+            }
+
+            // 誤差直方圖（對齊 GUI）：41 bin 以 0ms 為中心，中央藍、中距金、兩端紅；
+            // 空間不足（圖 + 下方 4 列文字排不下）時略過，mean 行仍照常顯示。
+            const int histTop = statsTop + 8;
+            const bool fitHist = term.rows() - histTop >= 8 && term.cols() >= 50 &&
+                                 session.errSamples() > 0;
+            int afterHist = histTop;
+            if (fitHist) {
+                const auto& hist = session.histogram();
+                int peak = 1;
+                for (int v : hist) peak = std::max(peak, v);
+                const int histRows = std::min(5, term.rows() - histTop - 5);
+                const int gw = std::min(term.cols() - 16, 61);  // 圖寬（格）
+                const int gx = (term.cols() - gw) / 2;
+                const int gBottom = (histTop + histRows) * 8 - 1;  // 圖底像素（含）
+                const int gh = histRows * 8;
+                canvas.fillRect(gx + gw / 2, gBottom - gh + 1, gx + gw / 2, gBottom,
+                                {70, 70, 80});  // 0ms 中線
+                constexpr int bins = PlaySession::kHistBins;
+                for (int i = 0; i < bins; ++i) {
+                    if (hist[i] == 0) continue;
+                    const int x0 = gx + i * gw / bins;
+                    const int x1 = gx + (i + 1) * gw / bins - 1;
+                    const int h = std::max(1,
+                        static_cast<int>(std::lround(static_cast<double>(hist[i]) / peak * gh)));
+                    const double off = std::abs(i - bins / 2) / (bins / 2.0);
+                    const Rgb c = off < 0.35 ? kSky : (off < 0.7 ? kGold : Rgb{230, 41, 55});
+                    canvas.fillRect(x0, gBottom - h + 1, x1, gBottom, c);
+                }
+                const int labelRow = histTop + histRows;
+                canvas.putText(gx, labelRow, "early", kGray);
+                canvas.putText(gx + gw - 4, labelRow, "late", kGray);
+                canvas.putText(cx - 6, labelRow, "timing error", kGray);
+                afterHist = labelRow + 1;
             }
             if (session.errSamples() > 0) {
                 const double mean = session.meanErrorMs();
                 const int sug = settings.audioOffsetMs - (int)std::lround(mean);
                 std::snprintf(buf, sizeof(buf), "mean %+.1fms  suggested offset %+dms", mean,
                               sug);
-                canvas.putText(cx - 16, ++y, buf, kGold);
+                canvas.putText(cx - (int)std::strlen(buf) / 2, afterHist++, buf, kGold);
             }
-            ++y;
+            ++afterHist;
             if (rateModded(rate)) {
                 std::snprintf(buf, sizeof(buf), "RATE %.2fx  -  not recorded", rate);
-                canvas.putText(cx - 12, y, buf, kGold);
+                canvas.putText(cx - (int)std::strlen(buf) / 2, afterHist, buf, kGold);
             } else if (prevBest.valid && session.score() > prevBest.score) {
-                canvas.putText(cx - 6, y, "NEW RECORD!", kGold);
+                // 破紀錄：金字 + 暗金底條（選單高亮手法）
+                canvas.fillRectBg(cx - 8, afterHist, cx + 7, afterHist, {60, 48, 16});
+                canvas.putText(cx - 6, afterHist, "NEW RECORD!", kGold);
             } else if (prevBest.valid) {
                 std::snprintf(buf, sizeof(buf), "BEST  %d  %.2f%%  %s", prevBest.score,
                               prevBest.accuracy, prevBest.grade.c_str());
-                canvas.putText(cx - 14, y, buf, kGray);
+                canvas.putText(cx - (int)std::strlen(buf) / 2, afterHist, buf, kGray);
             }
-            canvas.putText(cx - 10, term.rows() - 2, "enter / esc to return", kGray);
+            canvas.putText(cx - 10, term.rows() - 1, "enter / esc to return", kGray);
         }
 
         canvas.flush(out);

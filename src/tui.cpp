@@ -129,7 +129,9 @@ std::vector<KeyEvent> Terminal::poll() {
         if (buf_[i + 1] == 'O') {  // SS3：\eOP..\eOS = F1..F4
             if (i + 2 >= buf_.size()) break;
             const char f = buf_[i + 2];
-            if (f == 'R') events.push_back({kKeyF3, KeyEvent::Press});
+            if (f == 'P') events.push_back({kKeyF1, KeyEvent::Press});
+            else if (f == 'Q') events.push_back({kKeyF2, KeyEvent::Press});
+            else if (f == 'R') events.push_back({kKeyF3, KeyEvent::Press});
             else if (f == 'S') events.push_back({kKeyF4, KeyEvent::Press});
             i += 3;
             continue;
@@ -163,7 +165,9 @@ std::vector<KeyEvent> Terminal::poll() {
                 std::string keyfield = (semi == std::string::npos) ? body : body.substr(0, semi);
                 const size_t kc = keyfield.find(':');
                 int code = std::stoi(keyfield.substr(0, kc));
-                if (code == 57366) code = kKeyF3;  // Kitty 功能鍵 PUA → 合成碼
+                if (code == 57364) code = kKeyF1;  // Kitty 功能鍵 PUA → 合成碼
+                else if (code == 57365) code = kKeyF2;
+                else if (code == 57366) code = kKeyF3;
                 else if (code == 57367) code = kKeyF4;
                 const int ev = (semi == std::string::npos) ? 1 : eventType(body);
                 events.push_back({code, static_cast<KeyEvent::Type>(ev)});
@@ -177,13 +181,17 @@ std::vector<KeyEvent> Terminal::poll() {
                                               : kKeyLeft;
             events.push_back({code, static_cast<KeyEvent::Type>(eventType(body))});
         } else if (final == '~') {
-            // CSI tilde 功能鍵：13~=F3、14~=F4（前導數字）
+            // CSI tilde 功能鍵：11~=F1、12~=F2、13~=F3、14~=F4（前導數字）
             int num = 0;
             try {
                 num = std::stoi(body.substr(0, body.find_first_of(";:")));
             } catch (...) {
             }
-            if (num == 13) events.push_back({kKeyF3, static_cast<KeyEvent::Type>(eventType(body))});
+            if (num == 11) events.push_back({kKeyF1, static_cast<KeyEvent::Type>(eventType(body))});
+            else if (num == 12)
+                events.push_back({kKeyF2, static_cast<KeyEvent::Type>(eventType(body))});
+            else if (num == 13)
+                events.push_back({kKeyF3, static_cast<KeyEvent::Type>(eventType(body))});
             else if (num == 14)
                 events.push_back({kKeyF4, static_cast<KeyEvent::Type>(eventType(body))});
         }

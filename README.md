@@ -35,6 +35,10 @@ and `.qua` formats.
 - **Key-count filter** (Quaver-style): toggle 4K/5K/6K/7K chips with the number keys
   `4`–`7` to show only beatmaps of those key counts; at least one key count always
   stays on.
+- **Map preview** (Quaver-style): press `F1` or `p` in song select for a full-screen
+  autoplay mini-playfield synced to the looping chorus preview (self-running loop when
+  the map has no audio), with a full-map note-density bar along the bottom — `←`/`→`
+  scrubs ±5s, `↑`/`↓` switches maps without leaving, `F1`/`p`/`Esc` closes.
 - **Sortable / grouped song list**: press `S` to cycle sort keys — title, difficulty
   (Quaver/osu★), best grade, length, note count — and `Shift+S` to flip the direction.
   The list is grouped with headers (`SS`/`S`/`A`…`UNPLAYED`, `0 - 2 ★`/`2 - 4 ★`…, `A`–`Z`,
@@ -155,6 +159,7 @@ If your npm blocks install scripts and `require("realm")` fails afterwards, run
 | Key-count filter (in menu) | `4` `5` `6` `7` |
 | Sort/group songs | `s` key, `S` order |
 | View best-run result (in menu) | `r` |
+| Map preview (in menu) | `F1` or `p`, then `←` `→` seek / `↑` `↓` map / `F1` `p` `Esc` close |
 | Menu navigate | `↑↓` or `j k`, Enter, `q` |
 
 **Requires a terminal that supports the Kitty keyboard protocol** (kitty,

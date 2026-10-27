@@ -34,6 +34,7 @@
 namespace fs = std::filesystem;
 using tui::KeyEvent;
 using tui::kKeyDown;
+using tui::kKeyF1;
 using tui::kKeyF3;
 using tui::kKeyF4;
 using tui::kKeyLeft;
@@ -711,16 +712,167 @@ struct CoverResult {
 // 選單詳情：摘要 + 預先算好的難度（背景執行緒產生）
 struct MenuInfo {
     BeatmapInfo info;
+    std::vector<ManiaNote> notes;  // 完整音符（F1 預覽用；摘要解析時順便載入）
     double quaverDiff = 0.0;
     double osuStar = 0.0;
 };
 
+// 選單預覽（F1）版面常數
+constexpr double kPreviewFadeSec = 0.18;  // 自動命中閃光漸淡秒數（同遊玩閃光）
+
+// Quaver 式選單預覽：全畫面自動播放迷你軌道（跟隨 hover 副歌試聽同步滾動；無音檔時自走
+// 整圖循環），底部為全圖音符密度圖兼播放位置條。版面與音符樣式皆對齊實際遊玩
+// （laneCells 公式、approach＝設定的 scroll speed、軌道中央暗色 combo 大字）。
+// flash 就地更新：音符頭/尾在本幀越線即記。
+void drawMapPreview(PixelCanvas& canvas, const std::string& label, const MenuInfo* info,
+                    double timeMs, double prevTimeMs,
+                    std::array<Clock::time_point, 7>& flash, const std::vector<int>& density,
+                    double endMs, Clock::time_point now, double approachMs, int noteShape,
+                    float noteScale, std::string& imgOut) {
+    const int cols = canvas.cols();
+    const int rows = canvas.rows();
+    canvas.putText(2, 0, "MAP PREVIEW", kGold);
+    canvas.putText(14, 0, strutil::ellipsizeDisplay(label, std::max(0, cols - 16)), kGray);
+    canvas.putText(2, 1, "f1/p/esc close   up/down map   left/right seek 5s", kGray);
+
+    if (info == nullptr || info->notes.empty()) {
+        const char* msg = (info == nullptr) ? "analyzing map..." : "no notes";
+        canvas.putText(cols / 2 - (int)std::strlen(msg) / 2, rows / 2, msg, kGray);
+        return;
+    }
+    const int keyCount = std::clamp(info->info.keyCount, 4, 7);
+    const int laneCells = std::clamp((cols - 4) / keyCount, 2, 12);  // 同遊玩公式
+    const int playCells = laneCells * keyCount;
+    const int originCol = (cols - playCells) / 2;
+    const int judgePxY = (rows - 6) * 8;
+    const double pxPerMs = judgePxY / approachMs;
+
+    // 自動命中閃光（恆 Perfect）：判定線上方依判定著色、淡出的亮塊（每軌獨立）
+    for (int c = 0; c < keyCount; ++c) {
+        const double dt = std::chrono::duration<double>(now - flash[c]).count();
+        if (dt < 0.0 || dt >= kPreviewFadeSec) continue;
+        const float a = static_cast<float>(1.0 - dt / kPreviewFadeSec);
+        const int cx0 = originCol + c * laneCells;
+        canvas.fillRect(cx0, judgePxY - 10, cx0 + laneCells - 1, judgePxY - 2,
+                        fadeToBg(judgeRgb(Judgment::Perfect), a));
+    }
+    // 判定線（3 像素粗）
+    canvas.fillRect(originCol, judgePxY - 1, originCol + playCells - 1, judgePxY + 1, kWhite);
+
+    // Combo（自動全中）：頭＋長押尾各算一個判定單位（同 PlaySession 的計法），
+    // 以遊玩同款的暗色大字畫在軌道中央、音符下層
+    const auto& notes = info->notes;
+    int combo = 0;
+    for (const ManiaNote& n : notes) {
+        if (n.startTime <= timeMs) ++combo;
+        if (n.endTime > 0 && n.endTime <= timeMs) ++combo;
+    }
+    if (combo > 0)
+        drawBigDigits(canvas, combo, originCol + playCells / 2, judgePxY / 2, kComboDim);
+
+    // 音符（樣式跟隨設定的 noteShape/noteScale，與遊玩渲染相同）：已越線的視為命中不畫；
+    // 長押按住時頭貼判定線。頭/尾在本幀越線 → 記閃光
+    for (std::size_t i = 0; i < notes.size(); ++i) {
+        const ManiaNote& n = notes[i];
+        const int last = (n.endTime > 0) ? n.endTime : n.startTime;
+        if (last < timeMs) continue;
+        if (n.startTime > timeMs + approachMs) continue;
+        const int cx0 = originCol + n.column * laneCells;
+        const int cx1 = cx0 + laneCells - 1;
+        const bool holding = n.endTime > 0 && timeMs >= n.startTime;
+        const int headY =
+            holding ? judgePxY
+                    : judgePxY - static_cast<int>(std::lround((n.startTime - timeMs) * pxPerMs));
+        const Rgb nc = laneColor(n.column, keyCount);
+
+        // Round 1（八分塊）：逐欄依圓方程式算高度；不畫伸進長條那半
+        auto circleCap = [&](int centerPx, int half) {
+            const double R = laneCells / 2.0;
+            for (int dx = 0; dx < laneCells; ++dx) {
+                const double ex = (dx + 0.5) - R;
+                if (std::abs(ex) > R) continue;
+                const int halfPx = (int)std::lround(std::sqrt(R * R - ex * ex) * 4.0);
+                int top = centerPx - halfPx, bot = centerPx + halfPx;
+                if (half == 1) top = centerPx;  // 下半
+                if (half == 2) bot = centerPx;  // 上半
+                canvas.fillRect(cx0 + dx, top, cx0 + dx, bot, nc);
+            }
+        };
+        // Round 2（kitty 圖片，實驗性）：placement id 每顆唯一
+        auto place = [&](int centerPx, int placementId) {
+            const int r = std::max(1, laneCells / 2);
+            const int rowTop = centerPx / 8 - r / 2;
+            if (rowTop + r <= 0 || rowTop >= rows) return;
+            char b[112];
+            std::snprintf(b, sizeof(b),
+                          "\x1b[%d;%dH\x1b_Ga=p,i=%d,p=%d,c=%d,r=%d,C=1,q=2\x1b\\",
+                          rowTop + 1, cx0 + 1, n.column + 1, placementId, laneCells, r);
+            imgOut += b;
+        };
+        const int pid = static_cast<int>(i) + 1;
+
+        if (n.endTime > 0) {  // 長押身體 + 尾端圓
+            const int tailY =
+                judgePxY - static_cast<int>(std::lround((n.endTime - timeMs) * pxPerMs));
+            canvas.fillRect(cx0, std::min(headY, tailY), cx1, std::max(headY, tailY), nc);
+            if (noteShape == 1 && tailY > -64 && tailY < rows * 8 + 64)
+                circleCap(tailY, 2);
+            else if (noteShape == 2)
+                place(tailY, pid + 1000000);
+        }
+        if (headY >= 0 && headY <= judgePxY + 4) {
+            if (noteShape == 1) {
+                circleCap(headY, n.endTime > 0 ? 1 : 0);
+            } else if (noteShape == 2) {
+                place(headY, pid);
+            } else {
+                const int th = std::clamp((int)std::lround(10 * noteScale), 3, 64);
+                canvas.fillRect(cx0, headY - (th - 2), cx1, headY + 1, nc);
+            }
+        }
+        if ((n.startTime > prevTimeMs && n.startTime <= timeMs) ||
+            (n.endTime > 0 && n.endTime > prevTimeMs && n.endTime <= timeMs))
+            flash[n.column] = now;
+    }
+
+    // 時間標籤 + 全圖音符密度（最底列）：密度長條 + 播放位置游標，兼作 seek 進度條
+    char tbuf[40];
+    const int curS = static_cast<int>(std::max(0.0, timeMs) / 1000.0);
+    const int totS = static_cast<int>(endMs / 1000.0);
+    std::snprintf(tbuf, sizeof(tbuf), "%d:%02d / %d:%02d", curS / 60, curS % 60, totS / 60,
+                  totS % 60);
+    canvas.putText(2, rows - 2, tbuf, kGray);
+    canvas.putText(cols / 2 - 4, rows - 2, "autoplay", kGold);
+    const int bins = static_cast<int>(density.size());
+    if (bins > 0 && endMs > 0.0) {
+        int peak = 1;
+        for (int v : density) peak = std::max(peak, v);
+        const int gx = 2;
+        const int gw = cols - 4;
+        const int gy = (rows - 1) * 8 + 1;  // 圖頂像素
+        constexpr int gh = 5;               // 圖高（像素）
+        for (int i = 0; i < bins; ++i) {
+            if (density[i] == 0) continue;
+            const int x0 = gx + i * gw / bins;
+            const int x1 = gx + (i + 1) * gw / bins - 1;
+            const double v = static_cast<double>(density[i]) / peak;
+            const int h = std::max(1, static_cast<int>(std::lround(v * (gh - 1))));
+            canvas.fillRect(x0, gy + gh - h, x1, gy + gh - 1,
+                            fadeToBg(kSky, 0.35f + 0.65f * static_cast<float>(v)));
+        }
+        canvas.fillRect(gx, gy + gh, gx + gw - 1, gy + gh, kScrollTrack);  // 底線
+        const int xc =
+            gx + static_cast<int>(std::clamp(timeMs / endMs, 0.0, 1.0) * (gw - 2));
+        canvas.fillRect(xc, gy, xc + 1, gy + gh, kWhite);  // 播放游標
+    }
+}
+
 // 回傳 kMenuQuit=離開、kMenuSettings=設定，否則為選擇的 index；
 // sortKey/sortAsc 由呼叫端持有，跨場次保留排序/分組狀態
-int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float musicVolume,
-            float rate, bool autoPlay, const ScoreBook& scores, MapImporter& importer,
-            const fs::path& mapsDir, SortKey& sortKey, bool& sortAsc, int& keyFilter,
-            MenuCache& cache) {
+int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected,
+            const Settings& settings, float rate, bool autoPlay, const ScoreBook& scores,
+            MapImporter& importer, const fs::path& mapsDir, SortKey& sortKey, bool& sortAsc,
+            int& keyFilter, MenuCache& cache) {
     PixelCanvas canvas(term.cols(), term.rows());
     std::string out;
     Loader loader;  // 常駐背景載入執行緒
@@ -748,6 +900,17 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
     fs::path coverPending;
     const int coverCol = term.cols() / 2 + 2;  // 面板起始欄（1-based）
     const int coverRow = 5;                     // 面板起始列（1-based；避開第 4 列的鍵數篩選指示）
+
+    // 譜面預覽（F1，Quaver 式自動播放）狀態
+    bool previewing = false;
+    double pvTime = -1.0;      // 平滑播放頭（ms）；<0 ＝ 進場首幀再初始化
+    double pvPrevTime = 0.0;   // 上一幀播放頭（自動命中偵測用）
+    double pvLastAudio = -1.0;  // 上一幀音訊位置（試聽繞回偵測用）
+    std::array<Clock::time_point, 7> pvFlash{};  // 各軌自動命中閃光時間
+    std::vector<int> pvDensity;  // 全圖音符密度（底部 seek 條）
+    double pvEndMs = 0.0;      // 最後音符時間（密度圖/時間軸右端）
+    int pvBuiltFor = -1;       // 密度圖已為哪個 entry 建構
+    int pvCirclesFor = -1;     // kitty 圓形音符（shape 2）已傳輸的鍵數；-1 ＝ 未傳
 
     // 搜尋（/ 進入、Esc 清除）：query 為即時子字串篩選；filtered 存 entries 索引（顯示順序）
     std::string query;
@@ -827,7 +990,9 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
 
     while (true) {
         const auto frameStart = Clock::now();
-        fps.push(std::chrono::duration<double, std::milli>(frameStart - prev).count());
+        const double frameDtMs =
+            std::chrono::duration<double, std::milli>(frameStart - prev).count();
+        fps.push(frameDtMs);
         prev = frameStart;
         if (++fpsTick >= 20) {
             fpsTick = 0;
@@ -875,6 +1040,32 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
                 }
                 continue;
             }
+            if (previewing) {  // 預覽模式：攔截輸入（只留換圖與 seek）
+                if (e.code == kKeyF1 || e.code == 'p' || e.code == 27 || e.code == 'q') {
+                    previewing = false;
+                    pvTime = -1.0;
+                    if (pvCirclesFor >= 0) {  // 清掉 kitty 圓形音符的放置
+                        term.write(kKittyClearPlacements);
+                        pvCirclesFor = -1;
+                    }
+                    continue;
+                }
+                if (e.code == 'j' || e.code == kKeyDown) { stepSel(1); continue; }
+                if (e.code == 'k' || e.code == kKeyUp) { stepSel(-1); continue; }
+                if (e.code == kKeyLeft || e.code == kKeyRight) {  // ±5s seek
+                    const double d = (e.code == kKeyRight) ? 5000.0 : -5000.0;
+                    if (preview && preview->valid()) {
+                        const double len = GetMusicTimeLength(preview->get()) * 1000.0;
+                        pvTime = std::clamp(GetMusicTimePlayed(preview->get()) * 1000.0 + d,
+                                            0.0, std::max(0.0, len - 50.0));
+                        SeekMusicStream(preview->get(), static_cast<float>(pvTime / 1000.0));
+                    } else if (pvEndMs > 0.0) {
+                        pvTime = std::clamp(pvTime + d, 0.0, pvEndMs);
+                    }
+                    continue;
+                }
+                continue;
+            }
             if (e.code == '/') { searching = true; continue; }
             if (e.code == 's' || e.code == 'S') {  // s 換排序鍵；S（Shift+s）反轉方向
                 if (e.code == 's') sortKey = nextSortKey(sortKey);
@@ -892,6 +1083,18 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
                 // 數字鍵 4–7 切換鍵數篩選（至少保留一種）
                 keyFilter = toggleKeyFilter(keyFilter, e.code - '0');
                 filterDirty = true;
+                continue;
+            }
+            if ((e.code == kKeyF1 || e.code == 'p') && !filtered.empty()) {
+                // 譜面預覽（Quaver 式自動播放）；無 F 鍵的鍵盤可用 p
+                previewing = true;
+                pvTime = -1.0;       // 首幀再依音訊位置初始化
+                pvLastAudio = -1.0;  // 避免上一首的位置誤判為繞回
+                for (auto& f : pvFlash) f = Clock::time_point{};
+                if (!coverPath.empty()) term.write(kKittyDeleteAll);  // 預覽佔全畫面：先清封面
+                coverPath.clear();
+                coverRows = 0;
+                canvas.setReserved(0, 0, -1, -1);
                 continue;
             }
             if (filtered.empty()) continue;
@@ -962,6 +1165,7 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
                 MenuInfo mi;
                 mi.info = loadBeatmapInfo(p);
                 const Beatmap bm = loadBeatmap(p);
+                mi.notes = bm.notes;  // 留給 F1 預覽用
                 mi.quaverDiff = quaverDifficulty(bm.notes, bm.keyCount, 1.0f);
                 mi.osuStar = osuEstimateStarRating(mi.quaverDiff);
                 return mi;
@@ -988,7 +1192,8 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
             } else if (desired != previewPath && desired != pendingPath && !pendingLoad.valid()) {
                 pendingPath = desired;
                 pendingLoad = loader.submit(
-                    [p = desired.string(), pv = info->info.previewTimeMs, vol = musicVolume] {
+                    [p = desired.string(), pv = info->info.previewTimeMs,
+                     vol = settings.musicVolume] {
                         PreviewLoad pl;
                         pl.music = LoadMusicStream(p.c_str());
                         if (pl.music.stream.buffer) {  // 慢速的 seek 也在背景做，避免卡主迴圈
@@ -1026,8 +1231,8 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
                 SeekMusicStream(preview->get(), (float)previewStart);
         }
 
-        // 封面（kitty graphics）：停穩後於背景執行緒解碼（避免阻塞主迴圈）
-        if (settled) {
+        // 封面（kitty graphics）：停穩後於背景執行緒解碼（避免阻塞主迴圈）；預覽中暫停
+        if (settled && !previewing) {
             fs::path desired;
             if (!info->info.backgroundFilename.empty()) {
                 const fs::path bg = entries[selected].path.parent_path() / info->info.backgroundFilename;
@@ -1055,12 +1260,13 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
                 });
             }
         }
-        // 封面解碼完成 → 顯示
+        // 封面解碼完成 → 顯示（預覽中捨棄結果，離開預覽後正常流程會重載）
         if (coverLoad.valid() &&
             coverLoad.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
             const CoverResult r = coverLoad.get();
             coverPending.clear();
-            if (!r.seq.empty() && r.rows > 0) {
+            if (previewing) {
+            } else if (!r.seq.empty() && r.rows > 0) {
                 term.write(r.seq);
                 coverPath = r.path;
                 coverRows = r.rows;
@@ -1072,11 +1278,73 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
             }
         }
 
+        // 預覽模式：全畫面自動播放取代選單（背景載入／試聽更新照常在上方推進）
+        if (previewing) {
+            double audioPos = -1.0;
+            if (preview && preview->valid())
+                audioPos = GetMusicTimePlayed(preview->get()) * 1000.0;
+            if (infoReady && pvBuiltFor != selected) {  // 換圖（或摘要補齊）時重建密度圖
+                pvBuiltFor = selected;
+                pvEndMs = 0.0;
+                for (const ManiaNote& n : info->notes)
+                    pvEndMs = std::max(pvEndMs,
+                                       static_cast<double>(std::max(n.startTime, n.endTime)));
+                const int bins = std::clamp(term.cols() - 4, 20, 160);
+                pvDensity.assign(bins, 0);
+                if (pvEndMs > 0.0)
+                    for (const ManiaNote& n : info->notes)
+                        ++pvDensity[std::clamp(
+                            static_cast<int>(n.startTime / pvEndMs * (bins - 1)), 0, bins - 1)];
+            }
+            // 平滑播放頭：跟隨副歌試聽（含繞回）；無音檔時自走整圖循環
+            if (pvTime < 0.0) {
+                pvTime = (audioPos >= 0.0) ? audioPos : 0.0;
+            } else if (audioPos >= 0.0) {
+                if (pvLastAudio >= 0.0 && audioPos < pvLastAudio - 500.0)
+                    pvTime = audioPos;  // 試聽繞回副歌起點
+                else {
+                    pvTime += frameDtMs;  // 等速前進；明顯失準（seek/卡頓）才硬對齊
+                    if (std::abs(audioPos - pvTime) > 120.0) pvTime = audioPos;
+                }
+            } else {
+                pvTime += frameDtMs;
+                if (pvEndMs > 0.0 && pvTime > pvEndMs + 1500.0) pvTime = 0.0;
+            }
+            pvLastAudio = audioPos;
+
+            // kitty 圓形音符（shape 2）：依目前的鍵數傳輸軌道圓（換圖換鍵數時重傳）
+            if (settings.noteShape == 2 && infoReady) {
+                const int kc = std::clamp(info->info.keyCount, 4, 7);
+                if (pvCirclesFor != kc) {
+                    term.write(transmitLaneCircles(kc));
+                    pvCirclesFor = kc;
+                }
+            }
+            std::string imgOut;  // 本幀圓形音符的 kitty 放置序列
+            canvas.clear();
+            // approach 同遊玩：kBaseApproachMs / scrollSpeed，預覽所見節奏＝實機
+            drawMapPreview(canvas, entries[selected].label, infoReady ? &*info : nullptr,
+                           pvTime, pvPrevTime, pvFlash, pvDensity, pvEndMs, frameStart,
+                           kBaseApproachMs / settings.scrollSpeed, settings.noteShape,
+                           settings.noteScale, imgOut);
+            pvPrevTime = pvTime;
+            canvas.flush(out);
+            if (settings.noteShape == 2) {  // 先清掉上一幀的放置，再放本幀
+                out += kKittyClearPlacements;
+                out += imgOut;
+            }
+            term.write(out);
+            nextFrame += std::chrono::milliseconds(8);  // 與選單同節奏
+            std::this_thread::sleep_until(nextFrame);
+            if (nextFrame < Clock::now()) nextFrame = Clock::now();
+            continue;
+        }
+
         canvas.clear();
         canvas.putText(2, 1, "OVERKEY  (TUI)", kGold);
         canvas.putText(2, 2,
                        searching ? "type to filter   enter play   esc clear"
-                                 : "up/down move   enter play   r best   / search   "
+                                 : "up/down move   enter play   r best   f1/p preview   / search   "
                                    "s sort (S order)   4-7 keys   m mods   tab settings   q quit",
                        kGray);
         {  // 鍵數篩選指示（右側）：亮金＝顯示、灰＝隱藏
@@ -2038,8 +2306,8 @@ int main(int argc, char* argv[]) {
         bool sortAsc = cache.sortAsc();
         int keyFilter = kKeyFilterAll;     // 鍵數篩選狀態（跨場次保留，不存檔）
         while (true) {
-            const int choice = runMenu(term, entries, selected, settings.musicVolume, rate,
-                                       autoPlay, scores, importer, mapsDir, sortKey, sortAsc,
+            const int choice = runMenu(term, entries, selected, settings, rate, autoPlay,
+                                       scores, importer, mapsDir, sortKey, sortAsc,
                                        keyFilter, cache);
             if (choice == kMenuQuit) break;
             if (choice == kMenuSettings) {

@@ -21,6 +21,8 @@ inline constexpr int kKeyUp = -1;
 inline constexpr int kKeyDown = -2;
 inline constexpr int kKeyRight = -3;
 inline constexpr int kKeyLeft = -4;
+inline constexpr int kKeyF1 = -11;
+inline constexpr int kKeyF2 = -12;
 inline constexpr int kKeyF3 = -13;
 inline constexpr int kKeyF4 = -14;
 

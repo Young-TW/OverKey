@@ -44,7 +44,8 @@ and `.qua` formats.
   The list is grouped with headers (`SS`/`S`/`A`…`UNPLAYED`, `0 - 2 ★`/`2 - 4 ★`…, `A`–`Z`,
   time and note buckets); metrics are computed in a background thread with a progress
   indicator, then **cached to `overkey-cache.txt`** (mtime/size validated) together with
-  the sort state, so relaunching doesn't recompute.
+  the sort state and the last selected map, so relaunching restores the menu exactly
+  where you left it without recomputing.
 - **Settings** (persisted to `overkey.cfg`): audio offset,
   scroll speed, music/effect volume, per-lane keybinds for 4K, 5K, 6K and 7K.
 - **Result screen**: grade, accuracy, per-tier counts, timing-error histogram, and a

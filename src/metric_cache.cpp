@@ -37,6 +37,13 @@ MenuCache::MenuCache(std::filesystem::path file) : file_(std::move(file)) {
             }
             continue;
         }
+        if (tag == "sel") {  // 取第一個 tab 後的整段剩餘（path 可含 tab）
+            std::string rest;
+            std::getline(ss, rest);
+            setSelected(rest);
+            dirty_ = false;
+            continue;
+        }
         if (tag != "m") continue;
         std::vector<std::string> t;
         for (std::string tok; std::getline(ss, tok, '\t');) t.push_back(std::move(tok));
@@ -76,6 +83,12 @@ void MenuCache::setSort(int key, bool asc) {
     if (key == sortKey_ && asc == sortAsc_) return;
     sortKey_ = key;
     sortAsc_ = asc;
+    dirty_ = true;
+}
+
+void MenuCache::setSelected(const std::string& path) {
+    if (path == selectedPath_) return;
+    selectedPath_ = path;
     dirty_ = true;
 }
 
@@ -136,6 +149,7 @@ void MenuCache::save() {
     std::ofstream out(file_, std::ios::trunc);
     if (!out.is_open()) return;
     out << "sort\t" << sortKey_ << '\t' << (sortAsc_ ? 1 : 0) << '\n';
+    if (!selectedPath_.empty()) out << "sel\t" << selectedPath_ << '\n';
     for (const auto& [key, c] : items_) {
         const int flags = (c.hasInfo ? 1 : 0) | (c.hasDiff ? 2 : 0);
         if (flags == 0) continue;

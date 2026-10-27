@@ -104,7 +104,7 @@ install(FILES README.md DESTINATION share/doc/OverKey)
 # 測試：只編 core 原始碼，headless 可跑
 enable_testing()
 # test_core 加 src/tui.cpp：PixelCanvas（UTF-8 排版/背景色）的 headless 單元測試
-add_executable(test_core tests/test_core.cpp src/map.cpp src/play.cpp src/scores.cpp src/pp.cpp src/library.cpp src/tui.cpp)
+add_executable(test_core tests/test_core.cpp src/map.cpp src/play.cpp src/scores.cpp src/pp.cpp src/library.cpp src/metric_cache.cpp src/tui.cpp)
 target_include_directories(test_core PRIVATE ./include)
 add_test(NAME core COMMAND test_core)
 

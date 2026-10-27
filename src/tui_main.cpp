@@ -1197,6 +1197,7 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected,
         if (selected != lastSel) {  // 換選取：重啟防抖（先不停試聽）
             lastSel = selected;
             selChangedAt = Clock::now();
+            cache.setSelected(entries[selected].path.string());  // 只標 dirty，leave() 才寫碟
         }
 
         // 譜面摘要於背景執行緒解析；停穩 80ms 才啟動，避免連續捲動時每步都生執行緒
@@ -2377,7 +2378,13 @@ int main(int argc, char* argv[]) {
 
     {
         Terminal term;  // RAII：raw mode / alt screen / kitty
-        int selected = 0;
+        int selected = 0;  // 還原上次退出時選中的歌（path 找不到＝已被刪 → 第一首）
+        for (int i = 0; i < static_cast<int>(entries.size()); ++i) {
+            if (entries[i].path.string() == cache.selectedPath()) {
+                selected = i;
+                break;
+            }
+        }
         float rate = 1.0f;  // rate mod（暫時性，不存檔，每次啟動為 1.0x）
         bool autoPlay = false;
         // 排序／分組狀態：跨場次保留，並經由 overkey-cache.txt 跨啟動保留

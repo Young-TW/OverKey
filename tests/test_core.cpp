@@ -8,6 +8,7 @@
 
 #include "library.h"
 #include "map.h"
+#include "metric_cache.h"
 #include "play.h"
 #include "pp.h"
 #include "scores.h"
@@ -614,6 +615,52 @@ void testKeyFilter() {
     CHECK(s.laneKeys(3).empty() && s.laneKeys(8).empty());
 }
 
+// 選單快取 round-trip：sel/sort 行寫出後重載要讀得回；path 含 tab 也要存活
+void testMenuCache() {
+    std::printf("menu cache\n");
+    const fs::path f = fs::temp_directory_path() / "overkey_test" / "cache.txt";
+    fs::create_directories(f.parent_path());
+
+    {  // 空快取存檔：dirty=false → 不寫檔
+        MenuCache c{f};
+        CHECK(!c.dirty());
+        c.save();
+        CHECK(!fs::exists(f));
+    }
+
+    {
+        MenuCache c{f};
+        c.setSort(2, false);
+        c.setSelected("maps/Artist - Song/diff\twith tab.osu");
+        CHECK(c.dirty());
+        c.save();
+        CHECK(!c.dirty());
+        CHECK(fs::exists(f));
+
+        MenuCache r{f};
+        CHECK(r.sortKey() == 2 && !r.sortAsc());
+        CHECK(r.selectedPath() == "maps/Artist - Song/diff\twith tab.osu");
+        CHECK(!r.dirty());  // 剛載入不算變更
+        // 同值重設不翻 dirty；改值才翻
+        r.setSelected(r.selectedPath());
+        CHECK(!r.dirty());
+        r.setSelected("maps/other.osu");
+        CHECK(r.dirty());
+    }
+
+    {  // 舊版格式（沒有 sel 行）：selectedPath 為空、其餘仍讀得到
+        {
+            std::ofstream out(f, std::ios::trunc);
+            out << "sort\t1\t1\n";
+        }  // 關檔 flush 後才讀
+        MenuCache r{f};
+        CHECK(r.sortKey() == 1 && r.sortAsc());
+        CHECK(r.selectedPath().empty());
+    }
+
+    fs::remove(f);
+}
+
 }  // namespace
 
 int main() {
@@ -631,6 +678,7 @@ int main() {
     testPixelCanvas();
     testLibrary();
     testKeyFilter();
+    testMenuCache();
 
     std::error_code ec;
     fs::remove_all(fs::temp_directory_path() / "overkey_test", ec);

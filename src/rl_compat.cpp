@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -27,6 +28,64 @@ namespace {
 
 ma_engine g_engine;
 bool g_engineReady = false;
+double g_outputLatencyMs = 30.0;  // 「提交→發聲」延遲的平滑估計；InitAudioDevice 後以實測收斂
+
+// PulseAudio ABI 最小複寫（miniaudio 的 pulse 具體型別僅存在於其實作區，
+// 公開標頭的 device/context 裡只有 ma_proc/ma_ptr 欄位，故依官方 ABI 自行定義）
+struct OkPaSampleSpec {
+    int format;
+    uint32_t rate;
+    uint8_t channels;
+};
+struct OkPaBufferAttr {
+    uint32_t maxlength, tlength, prebuf, minreq, fragsize;
+};
+
+unsigned bytesPerFrameFromPulse(int format, unsigned channels) {
+    switch (format) {
+        case 0: return 1 * channels;         // U8
+        case 3: case 4: return 2 * channels;  // S16LE/S16BE
+        case 5: case 6: return 4 * channels;  // FLOAT32LE/BE
+        case 7: case 8: return 4 * channels;  // S32LE/S32BE
+        case 9:
+        case 10: return 3 * channels;  // S24LE/S24BE
+        default: return 0;
+    }
+}
+
+// 估算「引擎混音點 → 實際發聲」的延遲（ms，wall-clock 域）。
+// 組成：miniaudio 內部 ring 隊列 + PulseAudio server buffer（讀回實際 tlength）
+// + 一個 period 的驅動／硬體排程餘量。pa_stream_get_latency（官方全段估計）
+// 未被 miniaudio 載入、且需要 mainloop 執行緒語境，無法借用 —— 殘差靠
+// 結算畫面的 mean error 校準吸收。
+double measureOutputLatencyMs() {
+    if (!g_engineReady) return g_outputLatencyMs;
+    ma_device* d = ma_engine_get_device(&g_engine);
+    if (d->sampleRate == 0) return g_outputLatencyMs;
+    double ms = (double)d->playback.internalPeriodSizeInFrames * d->playback.internalPeriods /
+                d->sampleRate * 1000.0;  // 內部 ring 隊列（引擎混音點 → 裝置寫入點）
+    double tail = (double)d->playback.internalPeriodSizeInFrames / d->sampleRate * 1000.0;
+#if defined(MA_SUPPORT_PULSEAUDIO) && !defined(MA_NO_PULSEAUDIO)
+    ma_context* ctx = ma_device_get_context(d);
+    if (ctx->backend == ma_backend_pulseaudio && d->pulse.pStreamPlayback != nullptr) {
+        using GetAttrProc = const OkPaBufferAttr* (*)(void*);
+        using GetSpecProc = const OkPaSampleSpec* (*)(void*);
+        const auto getAttr = (GetAttrProc)ctx->pulse.pa_stream_get_buffer_attr;
+        const auto getSpec = (GetSpecProc)ctx->pulse.pa_stream_get_sample_spec;
+        if (getAttr != nullptr && getSpec != nullptr) {
+            void* stream = d->pulse.pStreamPlayback;
+            const OkPaBufferAttr* a = getAttr(stream);
+            const OkPaSampleSpec* ss = getSpec(stream);
+            if (a != nullptr && a->tlength != (uint32_t)-1 && ss != nullptr && ss->rate > 0) {
+                const unsigned bpf = bytesPerFrameFromPulse(ss->format, ss->channels);
+                if (bpf > 0)
+                    tail += (double)a->tlength / bpf / ss->rate * 1000.0;  // server 端 buffer
+            }
+        }
+    }
+#endif
+    return ms + tail;
+}
 
 // 一段已解碼、可播放的音訊：PCM 由本物件持有，audio_buffer 參照它、sound 掛在引擎上。
 struct Clip {
@@ -141,6 +200,11 @@ Clip* clipOf(void* buffer) { return static_cast<Clip*>(buffer); }
 void InitAudioDevice(void) {
     if (g_engineReady) return;
     ma_engine_config cfg = ma_engine_config_init();
+    // 低延遲：5ms 更新期（同 osu!/Quaver 的 BASS 5-10ms 等級）。
+    // 預設值在 PulseAudio 上會被擴成 ~19ms period × 4 period 的內部緩衝（實測），
+    // 音樂與打擊聲從引擎送出的到實際發聲可達 ~30-45ms，聽節拍打會系統性偏晚；
+    // 這裡的音樂全部預先解碼成 PCM，混音負載極輕，5ms 回呼頻率不成問題。
+    cfg.periodSizeInFrames = 240;  // 5ms @48kHz（其他取樣率同樣是 ~5ms 等級）
     if (ma_engine_init(&cfg, &g_engine) == MA_SUCCESS) g_engineReady = true;
 }
 
@@ -151,6 +215,12 @@ void CloseAudioDevice(void) {
 }
 
 bool IsAudioDeviceReady(void) { return g_engineReady; }
+
+float GetAudioOutputLatencyMs(void) {
+    const double m = measureOutputLatencyMs();
+    g_outputLatencyMs += (m - g_outputLatencyMs) * 0.25;  // 平滑：server 會動態調整 buffer
+    return (float)g_outputLatencyMs;
+}
 
 void SetTraceLogLevel(int) {}
 

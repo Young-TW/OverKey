@@ -19,8 +19,22 @@ took real debugging, kept here so they aren't rediscovered.
 - **Synchronized output:** wrap each frame in DEC mode 2026
   (`\e[?2026h` … `\e[?2026l`) so kitty/ghostty present frames atomically (no
   tearing).
-- **Pacing:** `sleep_until` on a fixed cadence, never `sleep_for(delta)`
-  (which accumulates jitter).
+- **Pacing:** hybrid sleep+spin on a fixed cadence (`preciseWaitUntil`), never
+  `sleep_for(delta)` (which accumulates jitter). At ~2 ms frame budgets, a pure
+  `nanosleep` wake-up can be late by a whole frame — sleep until ~0.5 ms before
+  the deadline, then `yield`-spin the rest. Frame target is 500 fps (screen
+  ceiling): beyond the terminal's present rate the extra frames are invisible
+  anyway, and an achievable target gives the scheduler enough slack that the
+  cadence stays steady.
+- **Keep O(ms) recomputes off the frame thread.** The live pp/QR counter is a
+  full QSS re-run (~2 ms on 6k notes); calling it on the main loop cost one
+  guaranteed dropped frame every 250 ms. It now runs on a persistent loader
+  thread over a tiny snapshot (judgment counts + song time + the immutable note
+  list), with a `busy` flag so jobs never pile up. Same lesson as the async
+  loaders below: the frame thread should only render.
+- **Make the FPS meter cheap.** Computing avg/1 %/0.1 % lows sorts the whole
+  sample window; doing that every 20 frames made the meter itself a periodic
+  frametime spike. Once per second is plenty.
 - **Eighth-block canvas:** glyphs U+2581..2588 give `rows*8` vertical
   resolution with full per-cell truecolor; `PixelCanvas` diffs against the
   previous frame and emits only changed cells.
@@ -97,6 +111,32 @@ the "MP3 has no seek table" stall below simply cannot happen on the TUI anymore
 (the async-adopt machinery still stands but the seek itself is now free). Cost:
 ~30 MB RAM for a decoded 3-minute stereo track, fine anywhere. `UpdateMusicStream`
 is a no-op because the engine mixes on its own thread.
+
+## Audio output latency vs. judgment clock (TUI)
+
+Symptom: "music feels later than the chart" even with `audioOffsetMs=0`, while
+osu!/Quaver feel accurate untouched.
+
+- **Cause 1 — device buffering:** miniaudio's default device config gives the
+  PulseAudio backend ~19 ms periods × 4 periods of internal queueing (measured
+  75 ms). The engine now requests `periodSizeInFrames=240` (5 ms, the
+  osu!/Quaver BASS 5–10 ms class). Safe here because every clip is pre-decoded
+  PCM, so the audio callback load is trivial.
+- **Cause 2 — submission ≠ audible:** the song cursor
+  (`ma_sound_get_cursor_in_seconds`) is the *mixer* position; the speakers lag
+  it by the whole pipeline (ring queue + PA server buffer + driver). Judging
+  against the raw cursor = music systematically late. Fix: estimate the
+  pipeline latency at runtime (`GetAudioOutputLatencyMs`, smoothed), **start
+  and seek the music early by that much**, and subtract it from the drift
+  anchor — the audible beat then lands on the judgment line with offset 0.
+  - `pa_stream_get_latency` would be the perfect measurement but miniaudio
+    doesn't load it and PA stream calls need the mainloop thread context; we
+    compose the estimate from the device internals + the actual `tlength`
+    read back from the running stream + one period of driver margin. Residual
+    error (±~10 ms on PipeWire) is absorbed by the result-screen calibration.
+  - The pulse struct types (`ma_pa_buffer_attr` etc.) live in miniaudio's
+    implementation region; declaration-only TUs must duplicate the small ABI
+    structs locally.
 
 ## raylib input polling (GUI)
 

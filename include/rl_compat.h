@@ -54,6 +54,9 @@ void InitAudioDevice(void);
 void CloseAudioDevice(void);
 bool IsAudioDeviceReady(void);
 void SetTraceLogLevel(int logLevel);  // no-op，僅為相容
+// 估測「音訊提交 → 實際發聲」的管線延遲（ms，wall-clock 域），播放中動態平滑。
+// 音樂提前此量開始／尋址，可讓聽到的節拍對齊判定時鐘（內建 universal offset）。
+float GetAudioOutputLatencyMs(void);
 
 // ---- 串流音樂 ----
 Music LoadMusicStream(const char* fileName);

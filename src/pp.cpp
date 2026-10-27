@@ -475,16 +475,18 @@ double osuManiaPP(double starRating, int n320, int n300, int n200, int n100, int
 
 double osuEstimateStarRating(double quaverDifficulty) { return quaverDifficulty / 4.4; }
 
-RatingEstimate estimateRatings(double quaverDiff, const PlaySession& session) {
+// counts 順序：Perfect, Great, Good, Bad, Miss
+RatingEstimate estimateRatingsFromCounts(double quaverDiff,
+                                         const std::array<int, 5>& counts) {
     RatingEstimate r;
     r.quaverDiff = quaverDiff;
 
     // 判定對應（見 pp.h）：OverKey 各級對到兩遊戲「次高」以下相同窗寬的等級
-    const int nPerfect = session.count(Judgment::Perfect);
-    const int nGreat = session.count(Judgment::Great);
-    const int nGood = session.count(Judgment::Good);
-    const int nBad = session.count(Judgment::Bad);
-    const int nMiss = session.count(Judgment::Miss);
+    const int nPerfect = counts[0];
+    const int nGreat = counts[1];
+    const int nGood = counts[2];
+    const int nBad = counts[3];
+    const int nMiss = counts[4];
 
     // Quaver：Perfect→Perf / Great→Great / Good→Good / Bad→Okay（Marv 視為 0）
     r.quaverAcc = quaverAccuracy(0, nPerfect, nGreat, nGood, nBad, nMiss);
@@ -494,6 +496,15 @@ RatingEstimate estimateRatings(double quaverDiff, const PlaySession& session) {
     r.osuStar = osuEstimateStarRating(quaverDiff);
     r.osuPP = osuManiaPP(r.osuStar, 0, nPerfect, nGreat, nGood, nBad, nMiss);
     return r;
+}
+
+RatingEstimate estimateRatings(double quaverDiff, const PlaySession& session) {
+    return estimateRatingsFromCounts(quaverDiff,
+                                     {session.count(Judgment::Perfect),
+                                      session.count(Judgment::Great),
+                                      session.count(Judgment::Good),
+                                      session.count(Judgment::Bad),
+                                      session.count(Judgment::Miss)});
 }
 
 // 遊戲中即時計數器：取譜面從頭到 songTimeMs 的音符前綴，對前綴重跑 QSS 難度

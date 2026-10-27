@@ -19,6 +19,7 @@
 //   OverKey BAD    (±125)→ osu 50  / Quaver OKAY(±127)
 //   OverKey MISS         → osu MISS / Quaver MISS
 
+#include <array>
 #include <vector>
 
 #include "map.h"
@@ -55,6 +56,11 @@ struct RatingEstimate {
     double osuPP = 0.0;         // lazer mania pp
 };
 RatingEstimate estimateRatings(double quaverDiff, const PlaySession& session);
+
+// 同 estimateRatings，但由判定計數快照計算（順序：Perfect, Great, Good, Bad, Miss）；
+// 供背景執行緒在不持有 PlaySession 的情況下重算即時估值（避免與主迴圈競爭）。
+RatingEstimate estimateRatingsFromCounts(double quaverDiff,
+                                         const std::array<int, 5>& counts);
 
 // 遊戲中即時計數器用：取譜面從頭到 songTimeMs 的音符前綴，對前綴重算
 // QSS 難度／推估 SR，配上目前累積的判定 acc 估值（非線性縮放——反映的是

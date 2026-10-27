@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -8,6 +9,7 @@
 #include <filesystem>
 #include <functional>
 #include <future>
+#include <mutex>
 #include <optional>
 #include <queue>
 #include <string>
@@ -292,7 +294,16 @@ void ingestNewMaps(MapImporter& importer, const fs::path& dir, std::vector<Entry
     }
 }
 
-constexpr auto kFramePeriod = std::chrono::microseconds(1000000 / 1000);  // 目標 1000fps
+constexpr auto kFramePeriod = std::chrono::microseconds(1000000 / 500);  // 目標 500fps（螢幕上限）
+constexpr auto kSpinTail = std::chrono::microseconds(500);  // 先睡到死線前 0.5ms，尾段自旋
+
+// 混合睡眠＋自旋等待：先睡到死線前 kSpinTail，再 busy-wait 到準點。
+// 毫秒級幀預算下純 nanosleep 的喚醒抖動可達整個幀，自旋尾段把它消掉。
+void preciseWaitUntil(Clock::time_point deadline) {
+    if (const auto coarse = deadline - kSpinTail; Clock::now() < coarse)
+        std::this_thread::sleep_until(coarse);
+    while (Clock::now() < deadline) std::this_thread::yield();
+}
 
 // 常駐背景載入執行緒（建一次重複用；避免 std::async 每次新建 thread 造成切歌抽幀）
 class Loader {
@@ -1022,6 +1033,9 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
     const int keyCount = std::clamp(map.keyCount, 4, 7);
     const int* laneKeys = settings.laneKeys(keyCount).data();
     const double offset = settings.audioOffsetMs;
+    // 「提交→發聲」管線延遲（歌曲域 ms）：音樂提前此量開始／尋址、判定錨點扣除此量，
+    // 讓「聽到的節拍」對齊判定線（內建 universal offset；殘差由結算 mean 校準）
+    double audioLatencyMs = 0.0;
     double approach = kBaseApproachMs / settings.scrollSpeed;
 
     const fs::path audioPath = entry.path.parent_path() / map.audioFilename;
@@ -1064,8 +1078,13 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
     double fAvg = 0, fLow1 = 0, fLow01 = 0;
     int fpsTick = 0;
 
-    // HUD 即時 pp / Quaver rating 計數器：對譜面前綴重跑 QSS（成本毫秒級）→ 節流
+    // HUD 即時 pp / Quaver rating 計數器：QSS 成本毫秒級，丟背景執行緒算（主迴圈只收結果），
+    // 否則每 250ms 必掉一個大幀。快照 = 判定計數 + 時間點；音符表直接讀 map.notes
+    // （playSong 全程存活；Loader 解構時 join，保證工作完成才離開作用域）。
     constexpr auto kLiveInterval = std::chrono::milliseconds(250);
+    Loader liveLoader;
+    std::atomic<bool> liveBusy{false};  // 有工作在算就不再投，避免堆積
+    std::mutex liveMtx;                 // 保護 liveEst：背景寫入、渲染讀取
     RatingEstimate liveEst;
     auto liveCalcAt = Clock::time_point{};  // epoch → 第一幀立即重算
 
@@ -1094,6 +1113,10 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
         }
         session = PlaySession(map.notes);
         errMarks.clear();                  // 清空命中誤差條刻度
+        {
+            std::lock_guard lk(liveMtx);   // 清掉上一局的即時估值
+            liveEst = RatingEstimate{};
+        }
         liveCalcAt = Clock::time_point{};  // 讓 HUD 即時計數器下一幀立即重算
         clock = SongClock{kLeadInMs};
         clock.setRate(rate);
@@ -1109,7 +1132,7 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
             std::chrono::duration<double, std::milli>(frameStart - prev).count();
         prev = frameStart;
         fps.push(dt);
-        if (++fpsTick >= 20) {  // 每 20 幀更新一次顯示
+        if (++fpsTick >= 500) {  // 每秒一次即可；stats 要排序取樣窗，高頻呼叫會自造尖刺
             fpsTick = 0;
             fps.stats(fAvg, fLow1, fLow01);
         }
@@ -1209,15 +1232,16 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
                 const int fn = session.firstNoteMs();
                 if (press && e.code == 32 && fn > kMinIntroMs &&
                     songTimeMs < fn - kSkipLeadMs) {
-                    const double target = fn - kSkipLeadMs;
-                    clock.seek(target);
-                    if (haveMusic) {
-                        if (!musicStarted) {
-                            PlayMusicStream(music.get());
-                            musicStarted = true;
-                        }
-                        SeekMusicStream(music.get(), (float)(target / 1000.0));
+                const double target = fn - kSkipLeadMs;
+                clock.seek(target);
+                if (haveMusic) {
+                    if (!musicStarted) {
+                        PlayMusicStream(music.get());
+                        musicStarted = true;
                     }
+                    // 提前管線延遲的量，讓落地點的節拍準時發聲
+                    SeekMusicStream(music.get(), (float)((target + audioLatencyMs) / 1000.0));
+                }
                     songTimeMs = target + offset;
                     continue;
                 }
@@ -1235,10 +1259,14 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
         // ---- 更新 ----
         if (playing && !paused) {
             if (musicStarted) UpdateMusicStream(music.get());
+            audioLatencyMs = GetAudioOutputLatencyMs() * rate;  // 每幀重估（server 動態調整）
+            // 錨點用「聽到的位置」：cursor（混音點）扣除管線延遲
             const double audioPos =
-                musicStarted ? GetMusicTimePlayed(music.get()) * 1000.0 : -1.0;
+                musicStarted ? GetMusicTimePlayed(music.get()) * 1000.0 - audioLatencyMs
+                             : -1.0;
             clock.tick(dt, audioPos);
-            if (clock.startedThisTick() && haveMusic) {
+            // 提前一個管線延遲起跑音樂：clock 過 0 時歌聲正好從喇叭出來
+            if (!musicStarted && haveMusic && clock.timeMs() >= -audioLatencyMs) {
                 PlayMusicStream(music.get());
                 musicStarted = true;
             }
@@ -1269,10 +1297,28 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
                 anyHit = true;
             }
             if (anyHit) PlaySound(hitSound);
-            // HUD 即時 pp / Quaver rating：節流重算，其餘幀沿用上次結果
+            // HUD 即時 pp / Quaver rating：節流投遞背景工作，其餘幀沿用上次結果
             if (frameStart - liveCalcAt >= kLiveInterval) {
                 liveCalcAt = frameStart;
-                liveEst = estimateLiveRatings(session, keyCount, songTimeMs);
+                if (!liveBusy.exchange(true)) {  // 還在算就跳過這輪
+                    const std::array<int, 5> counts{
+                        session.count(Judgment::Perfect), session.count(Judgment::Great),
+                        session.count(Judgment::Good), session.count(Judgment::Bad),
+                        session.count(Judgment::Miss)};
+                    liveLoader.post([&, counts, now = songTimeMs] {
+                        std::vector<ManiaNote> prefix;
+                        prefix.reserve(map.notes.size());
+                        for (const ManiaNote& n : map.notes)
+                            if (n.startTime <= now) prefix.push_back(n);
+                        const RatingEstimate r = estimateRatingsFromCounts(
+                            quaverDifficulty(prefix, keyCount, 1.0f), counts);
+                        {
+                            std::lock_guard lk(liveMtx);
+                            liveEst = r;
+                        }
+                        liveBusy = false;
+                    });
+                }
             }
             if (session.finished(songTimeMs)) {
                 playing = false;
@@ -1391,10 +1437,15 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
             canvas.putText(1, 1, buf, session.combo() > 0 ? kGold : kGray);
             std::snprintf(buf, sizeof(buf), "ACC %.2f%%", session.accuracy());
             canvas.putText(1, 2, buf, kWhite);
-            // 即時 Quaver rating / pp（前綴重算，節流快取於 update 區塊）
-            std::snprintf(buf, sizeof(buf), "QR %.2f", liveEst.quaverRating);
+            // 即時 Quaver rating / pp（背景執行緒節流重算，結果快取於 update 區塊）
+            RatingEstimate live;
+            {
+                std::lock_guard lk(liveMtx);
+                live = liveEst;
+            }
+            std::snprintf(buf, sizeof(buf), "QR %.2f", live.quaverRating);
             canvas.putText(1, 3, buf, kPurple);
-            std::snprintf(buf, sizeof(buf), "PP %.2f", liveEst.osuPP);
+            std::snprintf(buf, sizeof(buf), "PP %.2f", live.osuPP);
             canvas.putText(1, 4, buf, kGold);
             std::snprintf(buf, sizeof(buf), "SPEED %.1fx %.0fms", settings.scrollSpeed,
                           (term.rows() * 8) / pxPerMs);
@@ -1497,7 +1548,7 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
         }
 
         // 穩定步調：睡到固定節奏的下一幀（落後則重設，避免雪球）
-        std::this_thread::sleep_until(nextFrame);
+        preciseWaitUntil(nextFrame);
         nextFrame += kFramePeriod;
         if (nextFrame < Clock::now()) nextFrame = Clock::now() + kFramePeriod;
     }

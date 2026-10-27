@@ -30,6 +30,20 @@ public:
     const char* finalGrade() const { return session_.grade(); }
     int finalMaxCombo() const { return session_.maxCombo(); }
 
+    // 完整結算成績（含判定計數／誤差統計／直方圖），供最佳成績存檔與選單回放
+    ScoreRecord finalRecord() const {
+        ScoreRecord r{session_.score(), session_.accuracy(), session_.grade(),
+                      session_.maxCombo(), true};
+        r.counts = {session_.count(Judgment::Perfect), session_.count(Judgment::Great),
+                    session_.count(Judgment::Good), session_.count(Judgment::Bad),
+                    session_.count(Judgment::Miss)};
+        r.meanErrMs = session_.meanErrorMs();
+        r.errSamples = session_.errSamples();
+        r.audioOffsetMs = settings_.audioOffsetMs;
+        r.hist = session_.histogram();
+        return r;
+    }
+
 private:
     enum class Phase { Playing, Paused, Result };
 

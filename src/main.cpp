@@ -58,8 +58,7 @@ int main(int argc, char* argv[]) {
             saveSettings(settings, kConfigFile);
         }
         if (game.completed() && !autoPlay && rate == 1.0f) {  // auto/rate mod 局不計入 best
-            scores.submit(key, {game.finalScore(), game.finalAccuracy(), game.finalGrade(),
-                                game.finalMaxCombo(), true});
+            scores.submit(key, game.finalRecord());
         }
     }
 

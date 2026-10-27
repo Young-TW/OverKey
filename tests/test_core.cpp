@@ -295,19 +295,42 @@ void testScores() {
     fs::remove(f);
     const std::string key = "maps/Song [HARD].osu";  // key 含空白/括號
     {
+        ScoreRecord rec{1000, 90.0, "A", 100, true};  // v2 延伸欄位填入完整結算統計
+        rec.counts = {120, 30, 5, 2, 1};
+        rec.meanErrMs = -3.5;
+        rec.errSamples = 158;
+        rec.audioOffsetMs = 12;
+        rec.hist[17] = 3;
+        rec.hist[20] = 140;
+        rec.hist[25] = 15;
+
         ScoreBook sb(f);
         CHECK(!sb.best(key).valid);                                   // 一開始無紀錄
-        CHECK(sb.submit(key, {1000, 90.0, "A", 100}));               // 新紀錄
+        CHECK(sb.submit(key, rec));                                   // 新紀錄
         CHECK(!sb.submit(key, {800, 80.0, "B", 50}));                // 較低不更新
-        CHECK(sb.submit(key, {1500, 95.5, "S", 200}));               // 更高刷新
+        rec.score = 1500; rec.accuracy = 95.5; rec.grade = "S"; rec.maxCombo = 200;
+        CHECK(sb.submit(key, rec));                                   // 更高刷新
         const ScoreRecord r = sb.best(key);
         CHECK(r.valid && r.score == 1500 && r.grade == "S" && r.maxCombo == 200);
         CHECK(r.accuracy > 95.4 && r.accuracy < 95.6);
     }
     {
-        ScoreBook sb2(f);                                            // 重載：持久化
+        ScoreBook sb2(f);                                            // 重載：持久化（含 v2 欄位）
         const ScoreRecord r = sb2.best(key);
         CHECK(r.valid && r.score == 1500 && r.grade == "S");
+        CHECK(r.counts[0] == 120 && r.counts[3] == 2 && r.counts[4] == 1);
+        CHECK(r.errSamples == 158 && r.audioOffsetMs == 12);
+        CHECK(r.meanErrMs > -3.6 && r.meanErrMs < -3.4);
+        CHECK(r.hist[17] == 3 && r.hist[20] == 140 && r.hist[25] == 15);
+    }
+    {   // v1 舊格式行（無 v2 欄位）仍要能讀入，延伸欄位保持預設零值
+        std::ofstream out(f, std::ios::trunc);
+        out << "1234\t88.5\tB\t77\tmaps/Legacy Song [4K].osu\n";
+        out.close();
+        const ScoreRecord r = ScoreBook(f).best("maps/Legacy Song [4K].osu");
+        CHECK(r.valid && r.score == 1234 && r.grade == "B" && r.maxCombo == 77);
+        CHECK(r.accuracy > 88.4 && r.accuracy < 88.6);
+        CHECK(r.errSamples == 0 && r.counts[0] == 0 && r.hist[20] == 0);
     }
 }
 

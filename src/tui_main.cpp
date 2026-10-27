@@ -249,6 +249,122 @@ Rgb gradeRgb(const char* g) {
     return kSky;
 }
 
+static_assert(ScoreRecord::kHistBins == PlaySession::kHistBins,
+              "ScoreRecord::hist 需與 PlaySession 直方圖同尺寸");
+
+// 結算畫面共用資料：遊玩結束由 PlaySession 填入，選單歷史回放任由 ScoreRecord 填入
+struct ResultScreenData {
+    std::string title;
+    std::string grade;
+    double accuracy = 0.0;
+    int score = 0;
+    int maxCombo = 0;
+    RatingEstimate rating{};           // 由呼叫端以 estimateRatings* 算好
+    std::array<int, 5> counts{};       // Perfect/Great/Good/Bad/Miss
+    std::array<int, PlaySession::kHistBins> hist{};
+    int errSamples = 0;
+    double meanErrMs = 0.0;
+    int suggestedOffsetMs = 0;         // 由呼叫端算好（成績建立時的 offset - mean）
+    std::string footer;                // NEW RECORD / BEST / RATE 等；空字串不顯示
+    Rgb footerColor = kGray;
+    bool footerHighlight = false;      // NEW RECORD 的暗金底條
+};
+
+// 遊玩後結算與選單歷史回放共用的繪製（純繪圖，按鍵由呼叫端處理）
+void drawResultScreen(PixelCanvas& canvas, int cols, int rows, const ResultScreenData& d) {
+    const int cx = cols / 2;
+    canvas.putText(cx - 3, 1, "RESULT", kWhite);
+    {  // 譜面標題（對齊 GUI；CJK 已有寬字元排版）
+        const std::string t = strutil::ellipsizeDisplay(d.title, cols - 12);
+        canvas.putText(cx - strutil::displayWidth(t) / 2, 2, t, kGray);
+    }
+
+    // 大評級（色塊字，佔 4..8 列）：終端太矮時退回一般文字
+    const bool big = rows >= 20;
+    const char* g = d.grade.c_str();
+    if (big) {
+        drawBigText(canvas, g, cx, 4 * 8 + 20, gradeRgb(g));  // 佔 4..8 列
+    } else {
+        canvas.putText(cx - (int)d.grade.size() / 2, 4, g, gradeRgb(g));
+    }
+
+    // 左欄：總體數據（同 GUI 的標籤與配色）
+    char buf[64];
+    const int statsTop = big ? 10 : 6;
+    const int lx = std::max(1, cx - 22);
+    int ly = statsTop;
+    auto stat = [&](const char* label, const char* fmt, auto v, Rgb c) {
+        // 最長標籤 13 字（QUAVER RATING）+ 2 格間隔，數值再長（QR 可到 60+）也不貼字
+        std::snprintf(buf, sizeof(buf), "%-15s", label);
+        canvas.putText(lx, ly, buf, kGray);
+        std::snprintf(buf, sizeof(buf), fmt, v);
+        canvas.putText(lx + 15, ly++, buf, c);
+    };
+    stat("ACCURACY", "%.2f%%", d.accuracy, kWhite);
+    stat("SCORE", "%d", d.score, kWhite);
+    stat("MAX COMBO", "%d", d.maxCombo, kGold);
+    stat("QUAVER DIFF", "%.2f", d.rating.quaverDiff, kWhite);
+    stat("QUAVER RATING", "%.2f", d.rating.quaverRating, kPurple);
+    stat("OSU STAR", "%.2f\xE2\x98\x85", d.rating.osuStar, kWhite);
+    stat("OSU PP", "%.2f", d.rating.osuPP, kGold);
+
+    // 右欄：各判定等級次數（依判定著色）
+    const Judgment tiers[] = {Judgment::Perfect, Judgment::Great, Judgment::Good,
+                              Judgment::Bad, Judgment::Miss};
+    const int rx = std::min(cols - 14, cx + 4);
+    int ry = statsTop;
+    for (int t = 0; t < 5; ++t) {
+        std::snprintf(buf, sizeof(buf), "%-8s %d", judgeName(tiers[t]), d.counts[t]);
+        canvas.putText(rx, ry++, buf, judgeRgb(tiers[t]));
+    }
+
+    // 誤差直方圖（對齊 GUI）：41 bin 以 0ms 為中心，中央藍、中距金、兩端紅；
+    // 空間不足（圖 + 下方 4 列文字排不下）時略過，mean 行仍照常顯示。
+    const int histTop = statsTop + 8;
+    const bool fitHist = rows - histTop >= 8 && cols >= 50 && d.errSamples > 0;
+    int afterHist = histTop;
+    if (fitHist) {
+        const auto& hist = d.hist;
+        int peak = 1;
+        for (int v : hist) peak = std::max(peak, v);
+        const int histRows = std::min(5, rows - histTop - 5);
+        const int gw = std::min(cols - 16, 61);  // 圖寬（格）
+        const int gx = (cols - gw) / 2;
+        const int gBottom = (histTop + histRows) * 8 - 1;  // 圖底像素（含）
+        const int gh = histRows * 8;
+        canvas.fillRect(gx + gw / 2, gBottom - gh + 1, gx + gw / 2, gBottom,
+                        {70, 70, 80});  // 0ms 中線
+        constexpr int bins = PlaySession::kHistBins;
+        for (int i = 0; i < bins; ++i) {
+            if (hist[i] == 0) continue;
+            const int x0 = gx + i * gw / bins;
+            const int x1 = gx + (i + 1) * gw / bins - 1;
+            const int h =
+                std::max(1, static_cast<int>(std::lround(static_cast<double>(hist[i]) / peak * gh)));
+            const double off = std::abs(i - bins / 2) / (bins / 2.0);
+            const Rgb c = off < 0.35 ? kSky : (off < 0.7 ? kGold : Rgb{230, 41, 55});
+            canvas.fillRect(x0, gBottom - h + 1, x1, gBottom, c);
+        }
+        const int labelRow = histTop + histRows;
+        canvas.putText(gx, labelRow, "early", kGray);
+        canvas.putText(gx + gw - 4, labelRow, "late", kGray);
+        canvas.putText(cx - 6, labelRow, "timing error", kGray);
+        afterHist = labelRow + 1;
+    }
+    if (d.errSamples > 0) {
+        std::snprintf(buf, sizeof(buf), "mean %+.1fms  suggested offset %+dms", d.meanErrMs,
+                      d.suggestedOffsetMs);
+        canvas.putText(cx - (int)std::strlen(buf) / 2, afterHist++, buf, kGold);
+    }
+    ++afterHist;
+    if (!d.footer.empty()) {
+        if (d.footerHighlight)  // 破紀錄：金字 + 暗金底條（選單高亮手法）
+            canvas.fillRectBg(cx - 8, afterHist, cx + 7, afterHist, {60, 48, 16});
+        canvas.putText(cx - (int)d.footer.size() / 2, afterHist, d.footer, d.footerColor);
+    }
+    canvas.putText(cx - 10, rows - 1, "enter / esc to return", kGray);
+}
+
 int normKey(int k) { return (k >= 'A' && k <= 'Z') ? k + 32 : k; }
 
 int laneOf(int code, const int* keys, int keyCount) {
@@ -432,6 +548,7 @@ struct FpsMeter {
 constexpr int kMenuQuit = -1;
 constexpr int kMenuSettings = -2;
 constexpr int kMenuMods = -3;
+constexpr int kMenuResult = -4;  // 回放選取譜面的歷史最佳結算
 
 constexpr float kRateMin = 0.5f;
 constexpr float kRateMax = 2.0f;
@@ -772,6 +889,8 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
             if (filtered.empty()) continue;
             if (e.code == 'j' || e.code == kKeyDown) stepSel(1);
             if (e.code == 'k' || e.code == kKeyUp) stepSel(-1);
+            if (e.code == 'r' && scores.best(entries[selected].path.string()).valid)
+                return leave(kMenuResult);  // 回放歷史最佳結算
             if (e.code == 13 || e.code == 32) return leave(selected);
         }
         if (filterDirty) refilter();
@@ -948,8 +1067,8 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
         canvas.putText(2, 1, "OVERKEY  (TUI)", kGold);
         canvas.putText(2, 2,
                        searching ? "type to filter   enter play   esc clear"
-                                 : "up/down move   enter play   / search   s sort (S order)   "
-                                   "4-7 keys   m mods   tab settings   q quit",
+                                 : "up/down move   enter play   r best   / search   "
+                                   "s sort (S order)   4-7 keys   m mods   tab settings   q quit",
                        kGray);
         {  // 鍵數篩選指示（右側）：亮金＝顯示、灰＝隱藏
             int x = term.cols() - 2 - (kKeyFilterMax - kKeyFilterMin + 1) * 3;
@@ -1425,8 +1544,18 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
             if (session.finished(songTimeMs)) {
                 playing = false;
                 if (!recorded && !rateModded(rate) && !autoPlay) {  // auto/rate mod 局不計入 best
-                    scores.submit(scoreKey, {session.score(), session.accuracy(),
-                                             session.grade(), session.maxCombo(), true});
+                    ScoreRecord rec{session.score(), session.accuracy(), session.grade(),
+                                    session.maxCombo(), true};
+                    rec.counts = {session.count(Judgment::Perfect),
+                                  session.count(Judgment::Great),
+                                  session.count(Judgment::Good),
+                                  session.count(Judgment::Bad),
+                                  session.count(Judgment::Miss)};
+                    rec.meanErrMs = session.meanErrorMs();
+                    rec.errSamples = session.errSamples();
+                    rec.audioOffsetMs = settings.audioOffsetMs;
+                    rec.hist = session.histogram();
+                    scores.submit(scoreKey, rec);
                     recorded = true;
                 }
             }
@@ -1588,110 +1717,38 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
                 }
             }
         } else {
-            // 結算
-            const int cx = term.cols() / 2;
-            canvas.putText(cx - 3, 1, "RESULT", kWhite);
-            {  // 譜面標題（對齊 GUI；CJK 已有寬字元排版）
-                const std::string& ttl = map.title.empty() ? entry.label : map.title;
-                const std::string t = strutil::ellipsizeDisplay(ttl, term.cols() - 12);
-                canvas.putText(cx - strutil::displayWidth(t) / 2, 2, t, kGray);
-            }
-
-            // 大評級（色塊字，佔 4..8 列）：終端太矮時退回一般文字
-            const bool big = term.rows() >= 20;
-            const char* g = session.grade();
-            if (big) {
-                drawBigText(canvas, g, cx, 4 * 8 + 20, gradeRgb(g));  // 佔 4..8 列
-            } else {
-                canvas.putText(cx - (int)std::strlen(g) / 2, 4, g, gradeRgb(g));
-            }
-
+            // 結算（與選單歷史回放共用 drawResultScreen）
+            ResultScreenData rd;
+            rd.title = map.title.empty() ? entry.label : map.title;
+            rd.grade = session.grade();
+            rd.accuracy = session.accuracy();
+            rd.score = session.score();
+            rd.maxCombo = session.maxCombo();
             // Quaver 難度在開局時已算好（與 HUD 即時計數器同源）；此處只重估最終成績
-            const RatingEstimate ratingEst = estimateRatings(quaverDiff, session);
-            // 左欄：總體數據（同 GUI 的標籤與配色）
-            char buf[64];
-            const int statsTop = big ? 10 : 6;
-            const int lx = std::max(1, cx - 22);
-            int ly = statsTop;
-            auto stat = [&](const char* label, const char* fmt, auto v, Rgb c) {
-                std::snprintf(buf, sizeof(buf), "%-13s", label);
-                canvas.putText(lx, ly, buf, kGray);
-                std::snprintf(buf, sizeof(buf), fmt, v);
-                canvas.putText(lx + 13, ly++, buf, c);
-            };
-            stat("ACCURACY", "%.2f%%", session.accuracy(), kWhite);
-            stat("SCORE", "%d", session.score(), kWhite);
-            stat("MAX COMBO", "%d", session.maxCombo(), kGold);
-            stat("QUAVER DIFF", "%.2f", ratingEst.quaverDiff, kWhite);
-            stat("QUAVER RATING", "%.2f", ratingEst.quaverRating, kPurple);
-            stat("OSU STAR", "%.2f\xE2\x98\x85", ratingEst.osuStar, kWhite);
-            stat("OSU PP", "%.2f", ratingEst.osuPP, kGold);
-
-            // 右欄：各判定等級次數（依判定著色）
-            const Judgment tiers[] = {Judgment::Perfect, Judgment::Great, Judgment::Good,
-                                      Judgment::Bad, Judgment::Miss};
-            const int rx = std::min(term.cols() - 14, cx + 4);
-            int ry = statsTop;
-            for (Judgment t : tiers) {
-                std::snprintf(buf, sizeof(buf), "%-8s %d", judgeName(t), session.count(t));
-                canvas.putText(rx, ry++, buf, judgeRgb(t));
-            }
-
-            // 誤差直方圖（對齊 GUI）：41 bin 以 0ms 為中心，中央藍、中距金、兩端紅；
-            // 空間不足（圖 + 下方 4 列文字排不下）時略過，mean 行仍照常顯示。
-            const int histTop = statsTop + 8;
-            const bool fitHist = term.rows() - histTop >= 8 && term.cols() >= 50 &&
-                                 session.errSamples() > 0;
-            int afterHist = histTop;
-            if (fitHist) {
-                const auto& hist = session.histogram();
-                int peak = 1;
-                for (int v : hist) peak = std::max(peak, v);
-                const int histRows = std::min(5, term.rows() - histTop - 5);
-                const int gw = std::min(term.cols() - 16, 61);  // 圖寬（格）
-                const int gx = (term.cols() - gw) / 2;
-                const int gBottom = (histTop + histRows) * 8 - 1;  // 圖底像素（含）
-                const int gh = histRows * 8;
-                canvas.fillRect(gx + gw / 2, gBottom - gh + 1, gx + gw / 2, gBottom,
-                                {70, 70, 80});  // 0ms 中線
-                constexpr int bins = PlaySession::kHistBins;
-                for (int i = 0; i < bins; ++i) {
-                    if (hist[i] == 0) continue;
-                    const int x0 = gx + i * gw / bins;
-                    const int x1 = gx + (i + 1) * gw / bins - 1;
-                    const int h = std::max(1,
-                        static_cast<int>(std::lround(static_cast<double>(hist[i]) / peak * gh)));
-                    const double off = std::abs(i - bins / 2) / (bins / 2.0);
-                    const Rgb c = off < 0.35 ? kSky : (off < 0.7 ? kGold : Rgb{230, 41, 55});
-                    canvas.fillRect(x0, gBottom - h + 1, x1, gBottom, c);
-                }
-                const int labelRow = histTop + histRows;
-                canvas.putText(gx, labelRow, "early", kGray);
-                canvas.putText(gx + gw - 4, labelRow, "late", kGray);
-                canvas.putText(cx - 6, labelRow, "timing error", kGray);
-                afterHist = labelRow + 1;
-            }
-            if (session.errSamples() > 0) {
-                const double mean = session.meanErrorMs();
-                const int sug = settings.audioOffsetMs - (int)std::lround(mean);
-                std::snprintf(buf, sizeof(buf), "mean %+.1fms  suggested offset %+dms", mean,
-                              sug);
-                canvas.putText(cx - (int)std::strlen(buf) / 2, afterHist++, buf, kGold);
-            }
-            ++afterHist;
+            rd.rating = estimateRatings(quaverDiff, session);
+            rd.counts = {session.count(Judgment::Perfect), session.count(Judgment::Great),
+                         session.count(Judgment::Good), session.count(Judgment::Bad),
+                         session.count(Judgment::Miss)};
+            rd.hist = session.histogram();
+            rd.errSamples = session.errSamples();
+            rd.meanErrMs = session.meanErrorMs();
+            rd.suggestedOffsetMs = settings.audioOffsetMs - (int)std::lround(rd.meanErrMs);
+            char fbuf[48];
             if (rateModded(rate)) {
-                std::snprintf(buf, sizeof(buf), "RATE %.2fx  -  not recorded", rate);
-                canvas.putText(cx - (int)std::strlen(buf) / 2, afterHist, buf, kGold);
+                std::snprintf(fbuf, sizeof(fbuf), "RATE %.2fx  -  not recorded", rate);
+                rd.footer = fbuf;
+                rd.footerColor = kGold;
             } else if (prevBest.valid && session.score() > prevBest.score) {
-                // 破紀錄：金字 + 暗金底條（選單高亮手法）
-                canvas.fillRectBg(cx - 8, afterHist, cx + 7, afterHist, {60, 48, 16});
-                canvas.putText(cx - 6, afterHist, "NEW RECORD!", kGold);
+                rd.footer = "NEW RECORD!";  // 破紀錄：金字 + 暗金底條
+                rd.footerColor = kGold;
+                rd.footerHighlight = true;
             } else if (prevBest.valid) {
-                std::snprintf(buf, sizeof(buf), "BEST  %d  %.2f%%  %s", prevBest.score,
+                std::snprintf(fbuf, sizeof(fbuf), "BEST  %d  %.2f%%  %s", prevBest.score,
                               prevBest.accuracy, prevBest.grade.c_str());
-                canvas.putText(cx - (int)std::strlen(buf) / 2, afterHist, buf, kGray);
+                rd.footer = fbuf;
+                rd.footerColor = kGray;
             }
-            canvas.putText(cx - 10, term.rows() - 1, "enter / esc to return", kGray);
+            drawResultScreen(canvas, term.cols(), term.rows(), rd);
         }
 
         canvas.flush(out);
@@ -1709,6 +1766,50 @@ void playSong(Terminal& term, const Entry& entry, Settings& settings, Sound hit,
         preciseWaitUntil(nextFrame);
         nextFrame += kFramePeriod;
         if (nextFrame < Clock::now()) nextFrame = Clock::now() + kFramePeriod;
+    }
+}
+
+// 選單歷史回放：以存檔的最佳成績重建結算畫面；難度由譜面即時重算（與遊玩後結算同源），
+// QR/pp 從存檔的判定計數推估。enter/esc/q 返回選單。
+void viewBestResult(Terminal& term, const Entry& entry, const ScoreRecord& rec) {
+    const Beatmap map = loadBeatmap(entry.path);
+    const double quaverDiff =
+        map.notes.empty() ? 0.0 : quaverDifficulty(map.notes, map.keyCount, 1.0f);
+
+    ResultScreenData rd;
+    rd.title = map.title.empty() ? entry.label : map.title;
+    rd.grade = rec.grade;
+    rd.accuracy = rec.accuracy;
+    rd.score = rec.score;
+    rd.maxCombo = rec.maxCombo;
+    rd.rating = estimateRatingsFromCounts(quaverDiff, rec.counts);
+    rd.counts = rec.counts;
+    rd.hist = rec.hist;
+    rd.errSamples = rec.errSamples;
+    rd.meanErrMs = rec.meanErrMs;
+    rd.suggestedOffsetMs = rec.audioOffsetMs - (int)std::lround(rec.meanErrMs);
+    int total = 0;
+    for (int c : rec.counts) total += c;
+    if (total == 0) {  // v1 舊存檔無判定明細：提示重打以取得完整統計
+        rd.footer = "old record - replay for full stats";
+        rd.footerColor = kGray;
+    }
+
+    PixelCanvas canvas(term.cols(), term.rows());
+    std::string out;
+    while (true) {
+        term.refreshSize();
+        if (canvas.cols() != term.cols() || canvas.rows() != term.rows())
+            canvas.resize(term.cols(), term.rows());
+        for (const KeyEvent& e : term.poll())
+            if (e.type == KeyEvent::Press &&
+                (e.code == 13 || e.code == 32 || e.code == 27 || e.code == 'q' || e.code == 3))
+                return;
+        canvas.clear();
+        drawResultScreen(canvas, term.cols(), term.rows(), rd);
+        canvas.flush(out);
+        term.write(out);
+        std::this_thread::sleep_for(std::chrono::milliseconds(16));
     }
 }
 
@@ -1932,6 +2033,11 @@ int main(int argc, char* argv[]) {
             }
             if (choice == kMenuMods) {
                 runModMenu(term, rate, autoPlay);
+                continue;
+            }
+            if (choice == kMenuResult) {  // 歷史最佳結算回放（選單 r 鍵）
+                const ScoreRecord rec = scores.best(entries[selected].path.string());
+                if (rec.valid) viewBestResult(term, entries[selected], rec);
                 continue;
             }
             const float prevSpeed = settings.scrollSpeed;

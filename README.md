@@ -43,7 +43,9 @@ logic core**: a graphical version (raylib) and a terminal version (TUI). Support
 - **Settings** (persisted to `overkey.cfg`, shared by both frontends): audio offset,
   scroll speed, music/effect volume, per-lane keybinds for 4K, 5K, 6K and 7K.
 - **Result screen**: grade, accuracy, per-tier counts, timing-error histogram, and a
-  suggested offset for calibration.
+  suggested offset for calibration. The full stats are persisted with your best score — in
+  the **TUI** song list, press `r` on a map you have played to bring that best run's result
+  screen back up.
 - **Pause menu** (Resume / Retry / Quit), **quick retry**, **live speed adjust**.
 - GUI: borderless fullscreen via a virtual-resolution render target (letterboxed).
 - TUI: solid eighth-block rendering (rows×8 vertical resolution), Kitty keyboard
@@ -167,6 +169,7 @@ If your npm blocks install scripts and `require("realm")` fails afterwards, run
 | Search maps (in menu) | `/`, Esc clears | `/`, Esc clears |
 | Key-count filter (in menu) | `4` `5` `6` `7` or click chips | `4` `5` `6` `7` |
 | Sort/group songs | `S` key, `Shift+S` order | `s` key, `S` order |
+| View best-run result (in menu) | — | `r` |
 | Menu navigate | `↑ ↓`, Enter, Esc | `↑↓` or `j k`, Enter, `q` |
 
 The **TUI requires a terminal that supports the Kitty keyboard protocol** (kitty,

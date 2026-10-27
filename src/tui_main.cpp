@@ -709,6 +709,13 @@ struct CoverResult {
     fs::path path;
 };
 
+// 預覽背景圖的背景建構結果（同遊玩：調暗、image id 200、只傳不顯示）
+struct BgLoad {
+    std::string seq;
+    int w = 0, h = 0;
+    int entry = -1;
+};
+
 // 選單詳情：摘要 + 預先算好的難度（背景執行緒產生）
 struct MenuInfo {
     BeatmapInfo info;
@@ -727,8 +734,8 @@ constexpr double kPreviewFadeSec = 0.18;  // 自動命中閃光漸淡秒數（�
 void drawMapPreview(PixelCanvas& canvas, const std::string& label, const MenuInfo* info,
                     double timeMs, double prevTimeMs,
                     std::array<Clock::time_point, 7>& flash, const std::vector<int>& density,
-                    double endMs, Clock::time_point now, double approachMs, int noteShape,
-                    float noteScale, std::string& imgOut) {
+                    double endMs, Clock::time_point now, double approachMs, int bgImgW,
+                    int bgImgH, int noteShape, float noteScale, std::string& imgOut) {
     const int cols = canvas.cols();
     const int rows = canvas.rows();
     canvas.putText(2, 0, "MAP PREVIEW", kGold);
@@ -758,6 +765,36 @@ void drawMapPreview(PixelCanvas& canvas, const std::string& label, const MenuInf
     }
     // 判定線（3 像素粗）
     canvas.fillRect(originCol, judgePxY - 1, originCol + playCells - 1, judgePxY + 1, kWhite);
+
+    // 背景圖放置（z=-2 壓在文字下）：單張圖等比鋪滿全螢幕，再以 source crop 只顯示軌道
+    // 左右兩側（同遊玩；每幀重建以跟隨縮放）
+    if (bgImgW > 0 && bgImgH > 0) {
+        const double aspect = static_cast<double>(bgImgW) / bgImgH;
+        int boxW = cols, boxH = (int)std::lround(boxW * 0.5 / aspect);
+        if (boxH > rows) {
+            boxH = rows;
+            boxW = (int)std::lround(boxH * 2.0 * aspect);
+        }
+        boxW = std::max(1, boxW);
+        boxH = std::max(1, boxH);
+        const int boxCol = (cols - boxW) / 2;
+        const int boxRow = (rows - boxH) / 2;
+        auto placeCrop = [&](int cBegin, int cEnd, int pid) {
+            const int b = std::max(cBegin, boxCol);
+            const int e = std::min(cEnd, boxCol + boxW);
+            if (e - b <= 0) return;
+            const int x = (int)std::lround((double)(b - boxCol) / boxW * bgImgW);
+            const int w = std::max(1, (int)std::lround((double)(e - b) / boxW * bgImgW));
+            char buf[128];
+            std::snprintf(buf, sizeof(buf),
+                          "\x1b[%d;%dH\x1b_Ga=p,i=%d,p=%d,x=%d,w=%d,c=%d,r=%d,z=-2,C=1,q=2"
+                          "\x1b\\",
+                          boxRow + 1, b + 1, kBgImageId, pid, x, w, e - b, boxH);
+            imgOut += buf;
+        };
+        placeCrop(0, originCol, 1);
+        placeCrop(originCol + playCells, cols, 2);
+    }
 
     // Combo（自動全中）：頭＋長押尾各算一個判定單位（同 PlaySession 的計法），
     // 以遊玩同款的暗色大字畫在軌道中央、音符下層
@@ -911,6 +948,11 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected,
     double pvEndMs = 0.0;      // 最後音符時間（密度圖/時間軸右端）
     int pvBuiltFor = -1;       // 密度圖已為哪個 entry 建構
     int pvCirclesFor = -1;     // kitty 圓形音符（shape 2）已傳輸的鍵數；-1 ＝ 未傳
+    int pvBgFor = -1;          // 背景圖已傳輸的 entry（-1＝無）
+    int pvBgW = 0, pvBgH = 0;  // 已傳輸背景的像素尺寸（放置 source crop 用）
+    int pvBgLoadingFor = -1;   // 背景建構中的 entry
+    std::future<BgLoad> pvBgLoad;
+    bool pvHadKitty = false;   // 上一幀有 kitty 放置（消失時要補清一次）
 
     // 搜尋（/ 進入、Esc 清除）：query 為即時子字串篩選；filtered 存 entries 索引（顯示順序）
     std::string query;
@@ -1044,10 +1086,10 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected,
                 if (e.code == kKeyF1 || e.code == 'p' || e.code == 27 || e.code == 'q') {
                     previewing = false;
                     pvTime = -1.0;
-                    if (pvCirclesFor >= 0) {  // 清掉 kitty 圓形音符的放置
-                        term.write(kKittyClearPlacements);
-                        pvCirclesFor = -1;
-                    }
+                    // 清掉背景圖／圓形音符的放置（圖片資料保留，封面之後正常重載）
+                    term.write(kKittyClearPlacements);
+                    pvCirclesFor = -1;
+                    pvHadKitty = false;
                     continue;
                 }
                 if (e.code == 'j' || e.code == kKeyDown) { stepSel(1); continue; }
@@ -1091,10 +1133,12 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected,
                 pvTime = -1.0;       // 首幀再依音訊位置初始化
                 pvLastAudio = -1.0;  // 避免上一首的位置誤判為繞回
                 for (auto& f : pvFlash) f = Clock::time_point{};
-                if (!coverPath.empty()) term.write(kKittyDeleteAll);  // 預覽佔全畫面：先清封面
+                term.write(kKittyDeleteAll);  // 預覽佔全畫面：封面/背景/軌道圓全部重來
                 coverPath.clear();
                 coverRows = 0;
                 canvas.setReserved(0, 0, -1, -1);
+                pvCirclesFor = -1;
+                pvBgFor = -1;
                 continue;
             }
             if (filtered.empty()) continue;
@@ -1312,6 +1356,40 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected,
             }
             pvLastAudio = audioPos;
 
+            // 譜面背景圖：預覽中於背景執行緒建構傳輸序列（同遊玩的調暗/縮小，image id 200）
+            if (infoReady && selected != pvBgFor && selected != pvBgLoadingFor &&
+                !pvBgLoad.valid()) {
+                fs::path bg;
+                if (!info->info.backgroundFilename.empty()) {
+                    const fs::path p =
+                        entries[selected].path.parent_path() / info->info.backgroundFilename;
+                    std::error_code ec;
+                    if (fs::exists(p, ec)) bg = p;
+                }
+                pvBgLoadingFor = selected;
+                const int sel = selected;
+                pvBgLoad = loader.submit([bg, sel] {
+                    BgLoad r;
+                    r.entry = sel;
+                    if (!bg.empty()) r.seq = transmitBackground(bg, r.w, r.h);
+                    return r;
+                });
+            }
+            if (pvBgLoad.valid() &&
+                pvBgLoad.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+                const BgLoad r = pvBgLoad.get();
+                pvBgLoadingFor = -1;
+                if (previewing && r.entry == selected) {  // 只傳輸（a=t），放置每幀重建
+                    if (!r.seq.empty()) {
+                        term.write(r.seq);
+                        pvBgW = r.w;
+                        pvBgH = r.h;
+                    } else {
+                        pvBgW = 0;  // 無背景或解碼失敗：記住避免重試
+                    }
+                    pvBgFor = r.entry;
+                }
+            }
             // kitty 圓形音符（shape 2）：依目前的鍵數傳輸軌道圓（換圖換鍵數時重傳）
             if (settings.noteShape == 2 && infoReady) {
                 const int kc = std::clamp(info->info.keyCount, 4, 7);
@@ -1320,19 +1398,20 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected,
                     pvCirclesFor = kc;
                 }
             }
-            std::string imgOut;  // 本幀圓形音符的 kitty 放置序列
+            std::string imgOut;  // 本幀的 kitty 操作（背景放置 + 圓形音符）
             canvas.clear();
             // approach 同遊玩：kBaseApproachMs / scrollSpeed，預覽所見節奏＝實機
             drawMapPreview(canvas, entries[selected].label, infoReady ? &*info : nullptr,
                            pvTime, pvPrevTime, pvFlash, pvDensity, pvEndMs, frameStart,
-                           kBaseApproachMs / settings.scrollSpeed, settings.noteShape,
+                           kBaseApproachMs / settings.scrollSpeed,
+                           (pvBgFor == selected) ? pvBgW : 0, pvBgH, settings.noteShape,
                            settings.noteScale, imgOut);
             pvPrevTime = pvTime;
             canvas.flush(out);
-            if (settings.noteShape == 2) {  // 先清掉上一幀的放置，再放本幀
-                out += kKittyClearPlacements;
-                out += imgOut;
-            }
+            if (!imgOut.empty() || pvHadKitty)
+                out += kKittyClearPlacements;  // 先清掉上一幀的放置（消失後補清一次）
+            out += imgOut;
+            pvHadKitty = !imgOut.empty();
             term.write(out);
             nextFrame += std::chrono::milliseconds(8);  // 與選單同節奏
             std::this_thread::sleep_until(nextFrame);

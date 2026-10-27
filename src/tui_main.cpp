@@ -751,17 +751,17 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
     std::vector<MenuRow> rows;  // 項目 + 群組標頭混排的顯示列（捲動以列為單位）
     bool filterDirty = true;
     std::size_t lastCount = 0;
+    // 每譜面最佳成績的快取：等第排序／分組與列首等第徽標共用。scores 在選單期間不會
+    // 變動（打完譜回選單會整個重建 runMenu），只在譜面數量變動時整批重查。
+    std::vector<ScoreRecord> bests;
     auto refilter = [&] {
-        // 等第排序／分組需要成績；只在 Grade 鍵時整批查出
-        std::vector<ScoreRecord> bests;
-        if (sortKey == SortKey::Grade) {
-            bests.resize(entries.size());
+        if (bests.size() != entries.size()) {
+            bests.assign(entries.size(), ScoreRecord{});
             for (int i = 0; i < static_cast<int>(entries.size()); ++i)
                 bests[i] = scores.best(entries[i].path.string());
         }
         auto rowOf = [&](int i) {
-            return SortRow{&entries[i].label, &entries[i].metrics,
-                           bests.empty() ? nullptr : &bests[i]};
+            return SortRow{&entries[i].label, &entries[i].metrics, &bests[i]};
         };
         filtered.clear();
         for (int i = 0; i < static_cast<int>(entries.size()); ++i) {
@@ -1153,6 +1153,11 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
                     canvas.fillRectBg(1, top + i, listW + 1, top + i, kSelBg);
                 const Entry& en = entries[r.entry];
                 if (sel) canvas.putText(2, top + i, ">", kGold);
+                // 列首等第徽標（osu/Quaver 式）：有最佳紀錄才顯示，無紀錄留空對齊
+                const ScoreRecord& best = bests[r.entry];
+                if (best.valid)
+                    canvas.putText(3, top + i, best.grade, gradeRgb(best.grade.c_str()));
+                constexpr int kLabelX = 6;  // cx 3..4 等第（SS 最寬 2 格），cx 5 留白
                 // 右側資訊：已快取的難度值（色階著色） + 鍵數標籤
                 char right[24];
                 if (en.metrics.quaverDiff)
@@ -1162,8 +1167,9 @@ int runMenu(Terminal& term, std::vector<Entry>& entries, int& selected, float mu
                     std::snprintf(right, sizeof(right), "%dK", en.keyCount);
                 const int rightW = strutil::displayWidth(right);
                 const int rightX = listW + 1 - rightW;
-                const int labelMax = rightX - 2 - 2;  // cx 3 起算，與右側留 1 格
-                canvas.putText(3, top + i, strutil::ellipsizeDisplay(en.label, labelMax),
+                const int labelMax = rightX - 1 - kLabelX;  // kLabelX 起算，與右側留 1 格
+                canvas.putText(kLabelX, top + i,
+                               strutil::ellipsizeDisplay(en.label, labelMax),
                                sel ? kWhite : kGray);
                 if (en.metrics.quaverDiff) {
                     char dbuf[12];
